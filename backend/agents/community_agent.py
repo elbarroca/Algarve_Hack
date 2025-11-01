@@ -7,7 +7,7 @@ from openai import OpenAI
 from uagents import Agent, Context
 from tavily import TavilyClient
 from dotenv import load_dotenv
-from .models import CommunityAnalysisRequest, CommunityAnalysisResponse
+from models import CommunityAnalysisRequest, CommunityAnalysisResponse
 
 load_dotenv()
 
