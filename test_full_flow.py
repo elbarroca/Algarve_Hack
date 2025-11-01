@@ -31,7 +31,7 @@ sys.path.append('/Users/barroca888/Downloads/Dev/Algarve_Hack/backend')
 
 # Import models and agents
 try:
-    from models import (
+    from backend.models import (
         UserRequirements, PropertyListing, ScopingRequest, ScopingResponse,
         ResearchRequest, ResearchResponse, MapboxRequest, MapboxResponse,
         LocalDiscoveryRequest, LocalDiscoveryResponse, CommunityAnalysisRequest,
