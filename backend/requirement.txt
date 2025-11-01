@@ -21,3 +21,4 @@ mcp>=1.0.0
 # Web search and AI services
 tavily>=2.1.0
 openai>=1.51.0
+brightdata

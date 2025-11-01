@@ -319,8 +319,9 @@ def create_research_agent(port: int = 8002):
     return agent
 
 
-def parse_zillow_markdown(markdown: str, requirements) -> list:
-    """Parse Zillow markdown to extract property listings with validation."""
+
+def parse_portuguese_property_listings(markdown: str, requirements) -> list:
+    """Parse real Portuguese property listings from Algarve sources with validation."""
     assert isinstance(markdown, str), "Markdown must be a string"
     assert hasattr(requirements, 'budget_max'), "Requirements must have budget_max attribute"
     
@@ -328,97 +329,149 @@ def parse_zillow_markdown(markdown: str, requirements) -> list:
     lines = markdown.split("\n")
     current_property = {}
 
-    for line in lines:
-        # Extract address and URL from markdown links
-        if ("St," in line or "Ave," in line or "Rd," in line or
-            "Blvd," in line or "APT" in line or "Way," in line):
+    # Portuguese Algarve cities for validation
+    algarve_cities = ['faro', 'loulé', 'portimão', 'lagos', 'albufeira', 'tavira', 'silves']
 
+    for line in lines:
+        line_lower = line.lower().strip()
+        
+        # Extract address and URL from Portuguese property links
+        if any(pattern in line_lower for pattern in ['idealista.pt', 'imovirtual.com', 'casasapo.pt', 'olx.pt']):
+            
             if current_property and "address" in current_property:
                 try:
-                    listing = PropertyListing(**current_property)
-                    properties.append(listing)
+                    # Validate Algarve location before adding
+                    city = current_property.get("city", "").lower()
+                    if any(algarve_city in city for algarve_city in algarve_cities):
+                        listing = PropertyListing(**current_property)
+                        properties.append(listing)
                 except Exception:
                     pass
                 current_property = {}
 
-            if "](https://" in line:
-                start = line.find("[") + 1
-                end = line.find("](")
-                address = line[start:end].strip()
-
-                url_start = line.find("](") + 2
-                url_end = line.find(")", url_start)
-                url = line[url_start:url_end]
-
-                current_property["address"] = address
-                current_property["url"] = url
-
-                # Extract city
-                if ", CA " in address or ",CA " in address:
-                    parts = address.split(",")
-                    if len(parts) >= 2:
-                        current_property["city"] = parts[-2].strip()
-
-        # Extract property details
-        elif line.strip().startswith("$") and current_property:
-            price_str = line.strip().replace("$", "").replace(",", "")
-            try:
-                current_property["price"] = int(price_str)
-            except ValueError:
-                pass
-
-        elif "**" in line and ("bd" in line or "ba" in line) and current_property:
-            # Extract bedrooms
-            if "bds" in line or "bd" in line:
-                try:
-                    parts = line.split("**")
-                    for i, part in enumerate(parts):
-                        if i+1 < len(parts) and "bd" in parts[i+1]:
-                            current_property["bedrooms"] = int(part.strip())
+            # Extract URL from markdown links [text](url)
+            if "](" in line and "https://" in line:
+                start = line.find("](") + 2
+                end = line.find(")", start)
+                url = line[start:end]
+                
+                # Extract title/address before the URL
+                title_start = line.find("[")
+                title_end = line.find("]")
+                if title_start != -1 and title_end != -1:
+                    title = line[title_start+1:title_end]
+                    title_lower = title.lower()
+                    
+                    current_property["url"] = url
+                    current_property["address"] = title
+                    
+                    # Extract city from title
+                    for algarve_city in algarve_cities:
+                        if algarve_city in title_lower:
+                            current_property["city"] = algarve_city.title()
                             break
-                except (ValueError, IndexError):
+
+                    # Extract property type from title (T0, T1, T2, etc.)
+                    type_match = re.search(r'\b(t[0-5])\b', title_lower)
+                    if type_match:
+                        prop_type = type_match.group(1).upper()
+                        if prop_type == 'T0':
+                            current_property["bedrooms"] = 0
+                        elif prop_type == 'T1':
+                            current_property["bedrooms"] = 1
+                        elif prop_type == 'T2':
+                            current_property["bedrooms"] = 2
+                        elif prop_type == 'T3':
+                            current_property["bedrooms"] = 3
+                        elif prop_type == 'T4':
+                            current_property["bedrooms"] = 4
+                        elif prop_type == 'T5':
+                            current_property["bedrooms"] = 5
+
+        # Portuguese currency (€) - handle patterns like "850 €", "1.200€", etc.
+        elif ("€" in line or "eur" in line_lower) and current_property:
+            price_match = re.search(r'(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)', line)
+            if price_match:
+                try:
+                    price_str = price_match.group(1).replace(".", "").replace(",", "")
+                    current_property["price"] = int(price_str)
+                except ValueError:
                     pass
 
-            # Extract bathrooms
-            if "ba" in line:
+        # Portuguese bedroom patterns like "2 quartos", "1 quarto"
+        elif any(pattern in line_lower for pattern in ['quarto', 'quartos']) and current_property:
+            bedroom_match = re.search(r'(\d+)\s*(?:quarto|quartos)', line_lower)
+            if bedroom_match:
                 try:
-                    parts = line.split("**")
-                    for i, part in enumerate(parts):
-                        if (i+1 < len(parts) and "ba" in parts[i+1] and 
-                            "bd" not in parts[i+1]):
-                            current_property["bathrooms"] = float(part.strip())
-                            break
-                except (ValueError, IndexError):
+                    current_property["bedrooms"] = int(bedroom_match.group(1))
+                except ValueError:
                     pass
 
-            # Extract square footage
-            if "sqft" in line:
+        # Bathrooms - Portuguese patterns like "1 wc", "2 casas de banho", etc.
+        elif any(pattern in line_lower for pattern in ['wc', 'casa de banho', 'banheiro']) and current_property:
+            wc_match = re.search(r'(\d+)', line)
+            if wc_match:
                 try:
-                    sqft_idx = line.find("sqft")
-                    before_sqft = line[:sqft_idx]
-                    parts = before_sqft.split("**")
-                    sqft_str = parts[-2].replace(",", "").strip()
-                    current_property["sqft"] = int(sqft_str)
-                except (ValueError, IndexError):
+                    current_property["bathrooms"] = int(wc_match.group(1))
+                except ValueError:
                     pass
+
+        # Square footage - Portuguese patterns like "100m2", "120 m²", etc.
+        elif any(pattern in line_lower for pattern in ['m2', 'm²', 'metros']) and current_property:
+            sqft_match = re.search(r'(\d{2,4})', line)
+            if sqft_match:
+                try:
+                    current_property["sqft"] = int(sqft_match.group(1))
+                except ValueError:
+                    pass
+
+        # Long-term rental indicators - prioritize LT over AL (Alojamento Local)
+        elif any(pattern in line_lower for pattern in ['arrendamento', 'rental', 'aluguer', 'longa duração']) and current_property:
+            if "description" not in current_property:
+                current_property["description"] = ""
+            current_property["description"] += line.strip() + " "
+
+        # AL (Alojamento Local) indicator - flag but don't exclude automatically
+        elif any(pattern in line_lower for pattern in ['alojamento local', 'al ', 'short-term', 'turístico']) and current_property:
+            if "description" not in current_property:
+                current_property["description"] = ""
+            current_property["description"] += "[AL_FLG] " + line.strip() + " "
+
+        # Furnished indicator - common in Portuguese market
+        elif any(pattern in line_lower for pattern in ['mobilado', 'equipped', 'equipada', 'furnished']) and current_property:
+            if "description" not in current_property:
+                current_property["description"] = ""
+            current_property["description"] += "[FURNISHED] " + line.strip() + " "
 
     # Add final property
     if current_property and "address" in current_property:
         try:
-            listing = PropertyListing(**current_property)
-            properties.append(listing)
+            city = current_property.get("city", "").lower()
+            if any(algarve_city in city for algarve_city in algarve_cities):
+                listing = PropertyListing(**current_property)
+                properties.append(listing)
         except Exception:
             pass
 
     # Filter by requirements
     filtered = []
     for prop in properties:
+        # Budget filter
         if requirements.budget_max and prop.price and prop.price > requirements.budget_max:
             continue
-        if requirements.bedrooms and prop.bedrooms and prop.bedrooms != requirements.bedrooms:
+        # Bedrooms filter
+        if requirements.bedrooms is not None and prop.bedrooms is not None and prop.bedrooms != requirements.bedrooms:
             continue
+        # Bathrooms filter
         if requirements.bathrooms and prop.bathrooms and prop.bathrooms < requirements.bathrooms:
             continue
+        
+        # Add flag if it's likely AL (short-term) vs LT
+        if prop.description and ("[AL_FLG]" in prop.description or "alojamento local" in prop.description.lower()):
+            # Mark as potential AL but don't exclude - let the user decide
+            if prop.description:
+                prop.description += " [POTENTIAL_AL_LISTING] "
+        
         filtered.append(prop)
 
     return filtered
