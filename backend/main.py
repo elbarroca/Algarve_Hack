@@ -300,6 +300,14 @@ def main():
         ctx.logger.info(f"   Status: {msg.status}, Call ID: {msg.call_id}")
         vapi_sessions[msg.session_id] = msg
 
+    # Health check endpoint
+    class HealthResponse(Model):
+        status: str
+    
+    @coordinator.on_rest_get("/health", HealthResponse)
+    async def handle_health(ctx: Context) -> HealthResponse:
+        return HealthResponse(status="ok")
+    
     @coordinator.on_rest_post("/api/chat", ChatRequest, ChatResponse)
     async def handle_chat(ctx: Context, req: ChatRequest) -> ChatResponse:
         ctx.logger.info(f"REST request from session {req.session_id}: {req.message}")

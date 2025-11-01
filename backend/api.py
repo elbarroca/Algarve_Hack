@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import asyncio
 import uvicorn
+import uuid
 from uagents import Bureau
 
 from agents.prober_agent import create_prober_agent
@@ -108,7 +109,6 @@ async def negotiate_property(request: NegotiateRequest):
     print(f"{'='*60}\n")
 
     # Generate session ID
-    import uuid
     session_id = str(uuid.uuid4())
 
     # Send probe request to prober agent

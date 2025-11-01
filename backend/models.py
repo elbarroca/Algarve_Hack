@@ -69,6 +69,7 @@ class ResearchResponse(Model):
     raw_search_results: Optional[List[dict]] = None  # Raw organic search results from BrightData
     top_result_image_url: Optional[str] = None  # Image URL of top result (legacy)
     result_images: Optional[List[dict]] = None  # List of {"index": int, "image_url": str} for all results
+    formatted_properties_json: Optional[List[dict]] = None  # Formatted JSON properties with full details
 
 
 # General Agent Models

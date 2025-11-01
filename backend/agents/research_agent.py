@@ -1,61 +1,22 @@
 from uagents import Agent, Context
 from models import ResearchRequest, ResearchResponse, PropertyListing
 from clients.brigthdata import BrightDataClient
+from clients.firecrawl_mcp import get_firecrawl_mcp_client
+from utils.scraper import (
+    extract_properties_from_casa_sapo_listing,
+    filter_rental_properties,
+    format_property_json,
+    extract_property_from_casa_sapo_html,
+)
+from utils.firecrawl_scraper import get_firecrawl_scraper
 import aiohttp, os, json
-from bs4 import BeautifulSoup
+import asyncio
 import re
-
 
 ASI_API_KEY = os.getenv("ASI_API_KEY")
 ASI_URL = "https://api.asi1.ai/v1/chat/completions"
 BRIGHTDATA_TOKEN = os.getenv("BRIGHT_DATA_API_KEY")
-
-
-def extract_first_image_from_html(html_content: str) -> str | None:
-    """Extract the first property image URL from HTML content."""
-    try:
-        soup = BeautifulSoup(html_content, 'html.parser')
-        img_tags = soup.find_all('img', src=True)
-        
-        for img in img_tags:
-            img_url = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
-            if img_url:
-                # Skip small images, icons, and logos
-                if any(skip in img_url.lower() for skip in ['icon', 'logo', 'avatar', 'badge', 'button', '16x16', '32x32', '48x48', '64x64']):
-                    continue
-                # Make absolute URL if relative
-                if img_url.startswith('//'):
-                    return 'https:' + img_url
-                elif img_url.startswith('/'):
-                    return None  # Would need base URL
-                elif img_url.startswith('http'):
-                    return img_url
-        return None
-    except Exception as e:
-        print(f"[HTML Image Extract Error] {e}")
-        return None
-
-
-def extract_first_image_from_markdown(markdown: str) -> str | None:
-    """Extract the first image URL from markdown content."""
-    import re
-    # Look for markdown image syntax: ![alt](url)
-    img_pattern = r'!\[.*?\]\((https?://[^\)]+)\)'
-    matches = re.findall(img_pattern, markdown)
-
-    if matches:
-        # Filter for likely property images (avoid icons, logos, etc.)
-        for url in matches:
-            # Skip small images, icons, and logos
-            if any(skip in url.lower() for skip in ['icon', 'logo', 'avatar', 'badge', 'button']):
-                continue
-            # Skip very small dimensions in URL
-            if any(size in url.lower() for size in ['16x16', '32x32', '48x48', '64x64']):
-                continue
-            return url
-
-    return None
-
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 
 def filter_results_by_location(search_results: list, required_location: str) -> list:
     """Filter out results that are not real estate listings in the requested location."""
@@ -107,23 +68,53 @@ def filter_results_by_location(search_results: list, required_location: str) -> 
     return filtered
 
 
-async def generate_llm_summary(search_results: list, requirements, original_query: str) -> str:
-    """Use ASI-1 to generate a conversational summary from search results."""
+async def generate_llm_summary(properties_or_results, requirements, original_query: str, is_json_properties: bool = False) -> str:
+    """
+    Generate a conversational summary from either formatted JSON properties or raw search results.
+    
+    Args:
+        properties_or_results: Either List[dict] of formatted JSON properties or List[dict] of raw search results
+        requirements: UserRequirements object
+        original_query: Original search query
+        is_json_properties: True if properties_or_results contains formatted JSON properties, False for raw search results
+    """
     headers = {
         "Authorization": f"Bearer {ASI_API_KEY}",
         "Content-Type": "application/json",
     }
 
-    # Format search results
-    results_text = ""
-    for i, result in enumerate(search_results[:8], 1):
-        title = result.get("title", "")
-        description = result.get("description", "")
-        link = result.get("link", "")
-        results_text += f"{i}. {title}\n"
-        if description:
-            results_text += f"   {description}\n"
-        results_text += f"   Link: {link}\n\n"
+    # Format properties/results for LLM
+    properties_text = ""
+    
+    if is_json_properties:
+        # Handle formatted JSON properties
+        formatted_properties = properties_or_results
+        for i, prop in enumerate(formatted_properties[:5], 1):  # Limit to 5 for summary
+            prop_type = prop.get('property_type', 'Imóvel')
+            location = prop.get('location', {})
+            address = location.get('full_address', location.get('street', 'Unknown'))
+            price_info = prop.get('price', {})
+            price_amount = price_info.get('amount', 'N/A')
+            bedrooms = prop.get('property_details', {}).get('bedrooms')
+            
+            properties_text += f"{i}. {prop_type}"
+            if bedrooms:
+                properties_text += f" com {bedrooms} quartos"
+            properties_text += f" em {address}"
+            if price_amount and price_amount != 'N/A':
+                properties_text += f" - {price_amount}€/mês"
+            properties_text += "\n"
+    else:
+        # Handle raw search results
+        search_results = properties_or_results
+        for i, result in enumerate(search_results[:8], 1):
+            title = result.get("title", "")
+            description = result.get("description", "")
+            link = result.get("link", "")
+            properties_text += f"{i}. {title}\n"
+            if description:
+                properties_text += f"   {description}\n"
+            properties_text += f"   Link: {link}\n\n"
 
     # Build requirement summary in Portuguese
     req_parts = [requirements.location]
@@ -136,16 +127,20 @@ async def generate_llm_summary(search_results: list, requirements, original_quer
         req_parts.append(f"orçamento até {mil:.1f}M€")
     req_text = ", ".join(req_parts)
 
+    # Determine the input label based on type
+    input_label = "Propriedades encontradas" if is_json_properties else "Resultados da pesquisa"
+    
     body = {
         "model": "asi-1",
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "You are a friendly Portuguese real estate assistant. Based on search results, "
-                    "provide a natural, conversational summary in Portuguese of available properties. "
+                    "You are a friendly Portuguese real estate assistant. Based on rental property listings, "
+                    "provide a natural, conversational summary in Portuguese of available properties to rent. "
                     "Mention 2-3 specific listings with addresses and key details. "
                     "Keep it warm and helpful, 3-4 sentences max. "
+                    "Emphasize these are RENTAL properties (para alugar). "
                     "DO NOT mention the total number of listings in your response. "
                     "Use Portuguese language and Portuguese real estate terminology (quartos, casas de banho, etc.)."
                 ),
@@ -153,9 +148,9 @@ async def generate_llm_summary(search_results: list, requirements, original_quer
             {
                 "role": "user",
                 "content": (
-                    f"O utilizador está à procura de: {req_text}\n\n"
-                    f"Resultados da pesquisa:\n{results_text}\n"
-                    "Resuma que imóveis estão disponíveis. Não mencione quantas listagens há."
+                    f"O utilizador está à procura de imóveis para ALUGAR: {req_text}\n\n"
+                    f"{input_label}:\n{properties_text}\n"
+                    "Resuma que imóveis estão disponíveis para alugar. Não mencione quantas listagens há."
                 ),
             },
         ],
@@ -165,17 +160,19 @@ async def generate_llm_summary(search_results: list, requirements, original_quer
         async with aiohttp.ClientSession() as session:
             async with session.post(ASI_URL, headers=headers, json=body) as resp:
                 if resp.status != 200:
-                    return f"Aqui estão algumas listagens de imóveis em {requirements.location}. Confira os resultados para mais detalhes!"
+                    count = len(properties_or_results)
+                    return f"Encontrei {count} imóveis para alugar em {requirements.location}. Confira os resultados para mais detalhes!"
 
                 res = await resp.json()
                 if "choices" in res and res["choices"]:
                     return res["choices"][0]["message"]["content"]
                 else:
-                    return f"Aqui estão algumas listagens de imóveis em {requirements.location}. Confira os resultados para mais detalhes!"
+                    count = len(properties_or_results)
+                    return f"Encontrei {count} imóveis para alugar em {requirements.location}. Confira os resultados para mais detalhes!"
     except Exception as e:
-        ctx_logger = None  # We don't have ctx here, so just print
         print(f"[LLM Summary Error] {e}")
-        return f"Aqui estão algumas listagens de imóveis em {requirements.location}. Confira os resultados para mais detalhes!"
+        count = len(properties_or_results)
+        return f"Encontrei {count} imóveis para alugar em {requirements.location}. Confira os resultados para mais detalhes!"
 
 
 async def decide_tool(prompt: str) -> dict:
@@ -220,6 +217,280 @@ async def decide_tool(prompt: str) -> dict:
     except Exception:
         return {"tool": "search_engine", "arguments": {"query": prompt}}
 
+async def scrape_listing_page(
+    result: dict,
+    idx: int,
+    firecrawl_mcp,
+    firecrawl,
+    brightdata,
+    req,
+    portuguese_sites: list,
+    semaphore: asyncio.Semaphore,
+    ctx: Context
+) -> dict:
+    """
+    Async function to scrape a listing page and extract properties.
+    Returns dict with listing_properties and result_url or None if failed.
+    """
+    result_url = result.get("link", "")
+    if not result_url or not any(site in result_url for site in portuguese_sites):
+        return None
+    
+    async with semaphore:  # Limit concurrent requests
+        try:
+            ctx.logger.info(f"Scraping listing page {idx + 1}: {result_url}")
+            
+            html_content = None
+            
+            # Try Firecrawl MCP first if available
+            if firecrawl_mcp:
+                try:
+                    firecrawl_result = await firecrawl_mcp.scrape(result_url, formats=["html", "markdown"])
+                    if firecrawl_result:
+                        html_content = firecrawl_result.get("html", "")
+                        ctx.logger.info(f"✅ Firecrawl MCP scraped listing: {result_url}")
+                except Exception as e:
+                    ctx.logger.debug(f"Firecrawl MCP failed, trying Firecrawl SDK: {e}")
+            
+            # Try Firecrawl Python SDK if MCP didn't work
+            if not html_content and firecrawl:
+                try:
+                    firecrawl_result = await firecrawl.scrape_property_page(result_url)
+                    if firecrawl_result:
+                        html_content = firecrawl_result.get("html", "")
+                        ctx.logger.info(f"✅ Firecrawl SDK scraped listing: {result_url}")
+                except Exception as e:
+                    ctx.logger.debug(f"Firecrawl SDK failed, trying Bright Data: {e}")
+            
+            # Fallback to Bright Data if Firecrawl didn't work
+            if not html_content:
+                try:
+                    scrape_result = await brightdata.call(
+                        "scrape_as_markdown",
+                        {"url": result_url}
+                    )
+                    if scrape_result["success"]:
+                        markdown = scrape_result.get("output", "")
+                        # Check if markdown contains HTML
+                        if '<html' in markdown.lower() or '<body' in markdown.lower() or '<div' in markdown.lower():
+                            html_content = markdown
+                    
+                    # Also try HTML scraping
+                    if not html_content:
+                        scrape_result = await brightdata.call(
+                            "scrape_as_html",
+                            {"url": result_url}
+                        )
+                        if scrape_result["success"]:
+                            html_content = scrape_result.get("output", "")
+                except Exception as e:
+                    ctx.logger.warning(f"Bright Data scrape failed: {e}")
+            
+            # Parse properties from HTML
+            if html_content:
+                # Check if this is a Casa Sapo listing page
+                if 'casa.sapo.pt' in result_url:
+                    # Extract properties from listing page using utils
+                    listing_properties = extract_properties_from_casa_sapo_listing(html_content, result_url)
+                    return {
+                        "listing_properties": listing_properties,
+                        "result_url": result_url
+                    }
+                else:
+                    # For non-Casa Sapo sites, log and skip
+                    ctx.logger.info(f"Skipping non-Casa Sapo site: {result_url}")
+            
+            return None
+        except Exception as e:
+            ctx.logger.warning(f"Failed to scrape listing page {idx + 1}: {e}")
+            return None
+
+
+async def scrape_property_details(
+    prop_data: dict,
+    firecrawl_mcp,
+    firecrawl,
+    brightdata,
+    req,
+    semaphore: asyncio.Semaphore,
+    ctx: Context
+) -> dict:
+    """
+    Async function to scrape a single property's details.
+    Returns formatted property dict or None if failed.
+    """
+    prop_url = prop_data.get('url', '')
+    if not prop_url:
+        return None
+    
+    async with semaphore:  # Limit concurrent requests
+        try:
+            ctx.logger.info(f"  → Scraping individual property: {prop_url}")
+            
+            detail_html = None
+            
+            # Try Firecrawl MCP for detail page
+            if firecrawl_mcp:
+                try:
+                    detail_result = await firecrawl_mcp.scrape(prop_url, formats=["html", "markdown"])
+                    if detail_result:
+                        detail_html = detail_result.get("html", "")
+                except Exception as e:
+                    ctx.logger.debug(f"Firecrawl MCP detail scrape failed: {e}")
+            
+            # Try Firecrawl SDK if MCP didn't work
+            if not detail_html and firecrawl:
+                try:
+                    detail_result = await firecrawl.scrape_property_page(prop_url)
+                    if detail_result:
+                        detail_html = detail_result.get("html", "")
+                except Exception as e:
+                    ctx.logger.debug(f"Firecrawl SDK detail scrape failed: {e}")
+            
+            # Fallback to Bright Data
+            if not detail_html:
+                try:
+                    detail_scrape = await brightdata.call(
+                        "scrape_as_markdown",
+                        {"url": prop_url}
+                    )
+                    if detail_scrape["success"]:
+                        detail_html = detail_scrape.get("output", "")
+                except:
+                    pass
+            
+            # Extract full property details using utils
+            if detail_html and 'casa.sapo.pt' in prop_url:
+                full_prop_data = extract_property_from_casa_sapo_html(detail_html, prop_url)
+                if full_prop_data:
+                    # Merge with listing data
+                    prop_data.update(full_prop_data)
+            
+            # Format as JSON using utils
+            formatted_prop = format_property_json(prop_data)
+            
+            ctx.logger.info(f"✅ Formatted rental property JSON: {formatted_prop.get('property_type', 'Unknown')} - {formatted_prop.get('location', {}).get('full_address', 'Unknown')} - {formatted_prop.get('price', {}).get('amount', 'N/A')}€")
+            
+            return {
+                "formatted_prop": formatted_prop,
+                "prop_data": prop_data,
+                "prop_url": prop_url
+            }
+        except Exception as e:
+            ctx.logger.warning(f"Failed to scrape property {prop_url}: {e}")
+            return None
+
+
+def score_property_match(prop_data: dict, requirements) -> float:
+    """
+    Score a property based on how well it matches the user's requirements.
+    Returns a score from 0.0 to 100.0 (higher = better match).
+    """
+    score = 0.0
+    
+    # Extract property details
+    price_info = prop_data.get('price', {})
+    price_amount = price_info.get('amount')
+    if isinstance(price_amount, str):
+        # Extract numeric value from strings like "1250€"
+        try:
+            price_amount = float(''.join(filter(str.isdigit, str(price_amount))))
+        except:
+            price_amount = None
+    
+    bedrooms = prop_data.get('property_details', {}).get('bedrooms')
+    if not bedrooms:
+        bedrooms = prop_data.get('bedrooms')
+    
+    bathrooms = prop_data.get('property_details', {}).get('bathrooms')
+    if not bathrooms:
+        bathrooms = prop_data.get('bathrooms')
+    
+    location = prop_data.get('location', {})
+    address = location.get('full_address', '') or location.get('street', '')
+    
+    # 1. Bedrooms match (40 points max)
+    if requirements.bedrooms and bedrooms:
+        if bedrooms == requirements.bedrooms:
+            score += 40.0  # Exact match
+        elif bedrooms == requirements.bedrooms + 1:
+            score += 35.0  # Close match (+1)
+        elif bedrooms == requirements.bedrooms - 1:
+            score += 30.0  # Close match (-1)
+        elif bedrooms >= requirements.bedrooms:
+            score += 20.0  # More bedrooms (acceptable)
+        else:
+            score += 10.0  # Fewer bedrooms (less ideal)
+    elif requirements.bedrooms:
+        # Missing bedroom info - penalize
+        score -= 10.0
+    
+    # 2. Budget match (35 points max)
+    if requirements.budget_max and price_amount:
+        # Convert budget_max from annual to monthly if needed (typical rental budgets are monthly)
+        # Check if budget_max seems like annual (large number) or monthly (smaller number)
+        budget_monthly = requirements.budget_max
+        if requirements.budget_max > 10000:  # Likely annual budget
+            budget_monthly = requirements.budget_max / 12
+        
+        if price_amount <= budget_monthly:
+            # Within budget - calculate how close to max
+            ratio = price_amount / budget_monthly
+            if ratio <= 0.7:
+                score += 35.0  # Well within budget (great value)
+            elif ratio <= 0.85:
+                score += 30.0  # Good budget match
+            elif ratio <= 0.95:
+                score += 25.0  # Close to budget
+            else:
+                score += 20.0  # At budget limit
+        else:
+            # Over budget - penalize based on how much over
+            overage_ratio = (price_amount - budget_monthly) / budget_monthly
+            if overage_ratio <= 0.1:
+                score += 10.0  # Slightly over (10% overage)
+            elif overage_ratio <= 0.2:
+                score += 5.0   # Moderately over (20% overage)
+            else:
+                score -= 20.0  # Way over budget
+    elif requirements.budget_max:
+        # Missing price info - penalize
+        score -= 15.0
+    
+    # 3. Location relevance (15 points max)
+    if requirements.location and address:
+        location_lower = requirements.location.lower()
+        address_lower = address.lower()
+        if location_lower in address_lower:
+            score += 15.0  # Exact location match
+        elif any(word in address_lower for word in location_lower.split()):
+            score += 10.0  # Partial location match
+        else:
+            score += 5.0   # Different location
+    
+    # 4. Bathrooms match (10 points max)
+    if requirements.bathrooms and bathrooms:
+        if bathrooms == requirements.bathrooms:
+            score += 10.0
+        elif bathrooms >= requirements.bathrooms:
+            score += 8.0
+        else:
+            score += 5.0
+    
+    # 5. Property completeness bonus (5 points max)
+    completeness_bonus = 0.0
+    if prop_data.get('description'):
+        completeness_bonus += 1.0
+    if prop_data.get('images'):
+        completeness_bonus += 2.0
+    if prop_data.get('latitude') and prop_data.get('longitude'):
+        completeness_bonus += 2.0
+    score += completeness_bonus
+    
+    # Ensure score is between 0 and 100
+    return max(0.0, min(100.0, score))
+
+
 def create_research_agent(port: int = 8002):
     agent = Agent(
         name="research_agent",
@@ -238,7 +509,7 @@ def create_research_agent(port: int = 8002):
     async def handle_request(ctx: Context, sender: str, msg: ResearchRequest):
         req = msg.requirements
 
-        # Build search query for Bright Data - Portuguese real estate search
+        # Build search query for Bright Data - Portuguese real estate search (RENTALS ONLY)
         prompt_parts = [req.location]
 
         # Add Portugal if not already in location
@@ -250,7 +521,9 @@ def create_research_agent(port: int = 8002):
         if req.bathrooms:
             prompt_parts.append(f"{req.bathrooms} casas de banho")
 
-        prompt_parts.append("casas à venda")
+        # Search for RENTALS (alugar) instead of sales
+        prompt_parts.append("alugar")
+        prompt_parts.append("apartamentos casas")
 
         if req.budget_max and req.budget_max < 1000000:
             prompt_parts.append(f"até {req.budget_max//1000}k€")
@@ -308,52 +581,153 @@ def create_research_agent(port: int = 8002):
 
                     ctx.logger.info(f"Found {len(organic_results)} organic search results")
 
-                    # Try to scrape the first 5 results for images
-                    results_to_scrape = organic_results[:5]
-                    ctx.logger.info(f"Scraping {len(results_to_scrape)} results for images")
-
-                    # Portuguese real estate sites for scraping
-                    portuguese_sites = ['idealista.pt', 'imovirtual.com', 'casa.sapo.pt', 'imoovivo.com']
+                    # Scrape ALL filtered results to extract full property details
+                    results_to_scrape = organic_results  # Scrape all filtered results
+                    ctx.logger.info(f"Scraping {len(results_to_scrape)} results for full property data (rentals only)")
                     
-                    for idx, result in enumerate(results_to_scrape):
-                        result_url = result.get("link", "")
-                        if result_url and any(site in result_url for site in portuguese_sites):
-                            ctx.logger.info(f"Scraping result {idx + 1} for images and property data: {result_url}")
+                    # Initialize Firecrawl scraper if available (Python SDK)
+                    firecrawl = get_firecrawl_scraper()
+                    firecrawl_mcp = get_firecrawl_mcp_client()
+                    
+                    if firecrawl:
+                        ctx.logger.info("Using Firecrawl Python SDK for enhanced scraping")
+                    elif firecrawl_mcp:
+                        ctx.logger.info("Using Firecrawl MCP for enhanced scraping")
+                    
+                    # Portuguese real estate sites for scraping
+                    portuguese_sites = ['idealista.pt', 'imovirtual.com', 'casa.sapo.pt', 'imoovivo.com', 'supercasa.pt']
+                    
+                    scraped_properties_data = []  # Store raw property data - defined outside loop
+                    
+                    # Create semaphore for listing page scraping (max 5 concurrent)
+                    listing_semaphore = asyncio.Semaphore(5)
+                    
+                    # Scrape all listing pages in parallel
+                    ctx.logger.info(f"Scraping {len(results_to_scrape)} listing pages in parallel...")
+                    listing_tasks = [
+                        scrape_listing_page(
+                            result,
+                            idx,
+                            firecrawl_mcp,
+                            firecrawl,
+                            brightdata,
+                            req,
+                            portuguese_sites,
+                            listing_semaphore,
+                            ctx
+                        )
+                        for idx, result in enumerate(results_to_scrape)
+                    ]
+                    
+                    # Execute all listing page scraping tasks in parallel
+                    listing_results = await asyncio.gather(*listing_tasks, return_exceptions=True)
+                    
+                    # Collect all rental properties from all listing pages
+                    all_rental_properties = []
+                    for result in listing_results:
+                        if isinstance(result, Exception):
+                            ctx.logger.warning(f"Listing page scrape task failed: {result}")
+                            continue
+                        
+                        if result and result.get("listing_properties"):
+                            listing_properties = result["listing_properties"]
+                            # Filter for rentals only using utils
+                            rental_properties = filter_rental_properties(listing_properties)
+                            all_rental_properties.extend(rental_properties)
+                            ctx.logger.info(f"Found {len(listing_properties)} properties, {len(rental_properties)} rentals from {result['result_url']}")
+                    
+                    ctx.logger.info(f"Total rental properties collected: {len(all_rental_properties)}")
+                    
+                    if all_rental_properties:
+                        # Limit to reasonable number before scraping (to avoid scraping too many)
+                        # We'll scrape more and then filter to top 20
+                        max_properties_to_scrape = min(len(all_rental_properties), 50)  # Scrape up to 50, then filter to top 20
+                        properties_to_scrape = all_rental_properties[:max_properties_to_scrape]
+                        
+                        ctx.logger.info(f"Scraping {len(properties_to_scrape)} rental properties in parallel (will filter to top 20 best matches)...")
+                        
+                        # Create semaphore to limit concurrent requests (max 10 at a time)
+                        property_semaphore = asyncio.Semaphore(10)
+                        
+                        # Create tasks for parallel scraping
+                        scrape_tasks = [
+                            scrape_property_details(
+                                prop_data.copy(),  # Copy to avoid mutating original
+                                firecrawl_mcp,
+                                firecrawl,
+                                brightdata,
+                                req,
+                                property_semaphore,
+                                ctx
+                            )
+                            for prop_data in properties_to_scrape
+                        ]
+                        
+                        # Execute all scraping tasks in parallel
+                        scrape_results = await asyncio.gather(*scrape_tasks, return_exceptions=True)
+                        
+                        # Process results and score them
+                        scored_properties = []
+                        for result in scrape_results:
+                            if isinstance(result, Exception):
+                                ctx.logger.warning(f"Scraping task failed: {result}")
+                                continue
+                            
+                            if result:
+                                formatted_prop = result["formatted_prop"]
+                                prop_data = result["prop_data"]
+                                
+                                # Score the property based on requirements match
+                                score = score_property_match(prop_data, req)
+                                
+                                scored_properties.append({
+                                    "score": score,
+                                    "formatted_prop": formatted_prop,
+                                    "prop_data": prop_data,
+                                    "prop_url": result["prop_url"]
+                                })
+                        
+                        # Sort by score (highest first) and take top 20
+                        scored_properties.sort(key=lambda x: x["score"], reverse=True)
+                        top_properties = scored_properties[:20]
+                        
+                        ctx.logger.info(f"✅ Scored {len(scored_properties)} properties, selected top {len(top_properties)} best matches")
+                        if top_properties:
+                            ctx.logger.info(f"Score range: {top_properties[-1]['score']:.1f} - {top_properties[0]['score']:.1f}")
+                        
+                        # Process top properties
+                        for item in top_properties:
+                            formatted_prop = item["formatted_prop"]
+                            prop_data = item["prop_data"]
+                            prop_url = item["prop_url"]
+                            score = item["score"]
+                            
+                            scraped_properties_data.append(formatted_prop)
+                            
+                            # Create PropertyListing for compatibility
                             try:
-                                # Try HTML scraping first (if available in Bright Data)
-                                scrape_result = await brightdata.call(
-                                    "scrape_as_markdown",
-                                    {"url": result_url}
+                                listing = PropertyListing(
+                                    address=prop_data.get('location', prop_data.get('street', '')),
+                                    city=prop_data.get('city', req.location),
+                                    price=prop_data.get('price'),
+                                    bedrooms=prop_data.get('bedrooms'),
+                                    bathrooms=prop_data.get('bathrooms'),
+                                    sqft=prop_data.get('sqft'),
+                                    description=prop_data.get('description', ''),
+                                    url=prop_url,
+                                    latitude=prop_data.get('latitude'),
+                                    longitude=prop_data.get('longitude')
                                 )
-                                if scrape_result["success"]:
-                                    markdown = scrape_result.get("output", "")
-                                    
-                                    # Try to parse properties from HTML (if Bright Data provides HTML, we'd need a different tool)
-                                    # For now, extract image from markdown
-                                    image_url = extract_first_image_from_markdown(markdown)
-                                    
-                                    # Also try to get HTML content if available
-                                    # Note: Bright Data scrape_as_markdown might contain HTML tags, let's check
-                                    if '<html' in markdown.lower() or '<body' in markdown.lower():
-                                        # Markdown contains HTML, parse it
-                                        html_properties = parse_portuguese_html(markdown, req, result_url)
-                                        if html_properties:
-                                            # Add parsed properties to our list
-                                            for html_prop in html_properties:
-                                                if html_prop not in properties:
-                                                    properties.append(html_prop)
-                                    
-                                    if image_url:
-                                        ctx.logger.info(f"Found image for result {idx + 1}: {image_url[:100]}")
-                                        result_images.append({"index": idx, "image_url": image_url})
-                                    else:
-                                        ctx.logger.info(f"No image found for result {idx + 1}")
-                                else:
-                                    ctx.logger.warning(f"Scrape failed for result {idx + 1}")
+                                properties.append(listing)
+                                ctx.logger.info(f"✅ Added rental property (score: {score:.1f}): {prop_data.get('location', 'Unknown')} - {prop_data.get('price', 'N/A')}€")
                             except Exception as e:
-                                ctx.logger.warning(f"Failed to scrape result {idx + 1}: {e}")
-                        else:
-                            ctx.logger.info(f"Skipping result {idx + 1} (not a Portuguese real estate site)")
+                                ctx.logger.warning(f"Failed to create PropertyListing: {e}")
+                        
+                        ctx.logger.info(f"✅ Completed parallel scraping: {len(scraped_properties_data)} top properties processed")
+                    
+                    # Log summary after all scraping is done
+                    if scraped_properties_data:
+                        ctx.logger.info(f"📊 Scraped {len(scraped_properties_data)} rental properties with full details")
 
                 # Direct property listings format (if available)
                 if "properties" in data:
@@ -398,15 +772,80 @@ def create_research_agent(port: int = 8002):
                 ))
                 return
 
+        # If we don't have parsed properties from HTML scraping, create PropertyListing objects from organic search results
+        if len(properties) == 0 and organic_results and len(organic_results) > 0:
+            ctx.logger.info(f"Creating PropertyListing objects from {len(organic_results)} organic search results")
+            for idx, result in enumerate(organic_results):
+                try:
+                    # Extract basic info from search result
+                    title = result.get("title", "")
+                    description = result.get("description", "")
+                    link = result.get("link", "")
+                    
+                    # Try to extract price from title or description
+                    price = None
+                    price_text = (title + " " + description).lower()
+                    price_match = re.search(r'([\d.]+)\s*(?:k|mil|m|milh[ao]es?)?\s*€', price_text)
+                    if price_match:
+                        try:
+                            num_str = price_match.group(1).replace('.', '')
+                            if 'mil' in price_text or 'k' in price_text:
+                                price = int(float(num_str) * 1000)
+                            elif 'm' in price_text or 'milh' in price_text:
+                                price = int(float(num_str) * 1000000)
+                            else:
+                                price = int(float(num_str))
+                        except:
+                            pass
+                    
+                    # Try to extract bedrooms
+                    bedrooms = None
+                    bed_match = re.search(r'(\d+)\s*(?:quartos?|qts?|bedrooms?)', title + " " + description, re.I)
+                    if bed_match:
+                        try:
+                            bedrooms = int(bed_match.group(1))
+                        except:
+                            pass
+                    
+                    # Extract address from title (usually format: "Property description, Street, City")
+                    address = title
+                    city = req.location
+                    if ',' in title:
+                        parts = title.split(',')
+                        address = parts[0].strip()
+                        if len(parts) > 1:
+                            city = parts[-1].strip()
+                    
+                    # Create PropertyListing
+                    listing = PropertyListing(
+                        address=address,
+                        city=city,
+                        price=price,
+                        bedrooms=bedrooms if bedrooms else req.bedrooms,
+                        bathrooms=None,
+                        sqft=None,
+                        description=description[:500] if description else None,
+                        url=link,
+                        latitude=None,
+                        longitude=None
+                    )
+                    properties.append(listing)
+                    ctx.logger.info(f"✅ Created PropertyListing from search result {idx + 1}: {address[:50]}")
+                except Exception as e:
+                    ctx.logger.warning(f"Failed to create PropertyListing from search result {idx + 1}: {e}")
+
         # Build summary - use LLM if we have organic results
-        total_results = len(organic_results) if organic_results else len(properties)
+        total_results = len(scraped_properties_data) if scraped_properties_data else (len(organic_results) if organic_results else len(properties))
 
-        if organic_results and len(organic_results) > 0:
+        if scraped_properties_data and len(scraped_properties_data) > 0:
+            # Use LLM to generate summary from formatted JSON properties
+            ctx.logger.info(f"Generating LLM summary from {len(scraped_properties_data)} rental properties")
+            summary = await generate_llm_summary(scraped_properties_data, req, prompt, is_json_properties=True)
+        elif organic_results and len(organic_results) > 0:
             ctx.logger.info("Generating LLM summary from search results")
-            summary = await generate_llm_summary(organic_results, req, prompt)
-
+            summary = await generate_llm_summary(organic_results, req, prompt, is_json_properties=False)
         elif properties:
-            summary = f"Aqui estão imóveis em {req.location}"
+            summary = f"Encontrei {len(properties)} imóveis para alugar em {req.location}"
             if req.bedrooms:
                 summary += f" com {req.bedrooms} quartos"
             if req.bathrooms:
@@ -415,10 +854,17 @@ def create_research_agent(port: int = 8002):
                 mil = req.budget_max / 1000000
                 summary += f" até {mil:.1f}M€"
         else:
-            summary = f"Nenhum imóvel encontrado que corresponda aos seus critérios. Tente ajustar os parâmetros de pesquisa."
+            summary = f"Nenhum imóvel para alugar encontrado que corresponda aos seus critérios. Tente ajustar os parâmetros de pesquisa."
 
         # For backwards compatibility, keep top_result_image as the first image
-        top_result_image = result_images[0]["image_url"] if result_images else None
+        top_result_image = None
+        if scraped_properties_data and len(scraped_properties_data) > 0:
+            first_prop_images = scraped_properties_data[0].get('images', [])
+            top_result_image = first_prop_images[0] if first_prop_images else None
+        elif result_images:
+            top_result_image = result_images[0]["image_url"] if result_images else None
+
+        ctx.logger.info(f"📊 Final summary: {len(scraped_properties_data) if scraped_properties_data else len(properties)} rental properties, {len(scraped_properties_data)} with full JSON details")
 
         await ctx.send(sender, ResearchResponse(
             properties=properties,
@@ -427,351 +873,8 @@ def create_research_agent(port: int = 8002):
             session_id=msg.session_id,
             raw_search_results=organic_results if organic_results else None,
             top_result_image_url=top_result_image,
-            result_images=result_images if result_images else None
+            result_images=result_images if result_images else None,
+            formatted_properties_json=scraped_properties_data if scraped_properties_data else None
         ))
 
     return agent
-
-
-def parse_portuguese_html(html_content: str, requirements, url: str = "") -> list:
-    """Parse HTML from Portuguese real estate sites (Idealista, Imovirtual, etc.) to extract property listings"""
-    properties = []
-    
-    if not html_content:
-        return properties
-    
-    try:
-        soup = BeautifulSoup(html_content, 'html.parser')
-    except Exception as e:
-        print(f"[HTML Parse Error] Failed to parse HTML: {e}")
-        return properties
-    
-    # Detect site type from URL or HTML structure
-    is_idealista = 'idealista' in url.lower() or soup.find('body', class_=re.compile('idealista', re.I))
-    is_imovirtual = 'imovirtual' in url.lower() or soup.find('body', class_=re.compile('imovirtual', re.I))
-    is_casa_sapo = 'casa.sapo' in url.lower() or soup.find('body', class_=re.compile('sapo', re.I))
-    
-    # Extract property listings based on site type
-    if is_idealista:
-        properties = _parse_idealista_html(soup, url)
-    elif is_imovirtual:
-        properties = _parse_imovirtual_html(soup, url)
-    elif is_casa_sapo:
-        properties = _parse_casa_sapo_html(soup, url)
-    else:
-        # Generic parsing for unknown sites
-        properties = _parse_generic_portuguese_html(soup, url)
-    
-    # Filter by requirements
-    filtered = []
-    for prop in properties:
-        # Filter by budget
-        if requirements.budget_max and prop.price and prop.price > requirements.budget_max:
-            continue
-
-        # Filter by bedrooms
-        if requirements.bedrooms and prop.bedrooms and prop.bedrooms != requirements.bedrooms:
-            continue
-
-        # Filter by bathrooms
-        if requirements.bathrooms and prop.bathrooms and prop.bathrooms < requirements.bathrooms:
-            continue
-
-        filtered.append(prop)
-
-    return filtered
-
-
-def _parse_idealista_html(soup: BeautifulSoup, base_url: str) -> list:
-    """Parse Idealista HTML structure"""
-    properties = []
-    
-    # Idealista structure: property cards are usually in containers with class containing "item"
-    property_cards = soup.find_all(['article', 'div'], class_=re.compile(r'item|property|listing|card', re.I))
-    
-    for card in property_cards:
-        prop = {}
-        
-        # Extract price (usually in span/div with price-related classes)
-        price_elem = card.find(['span', 'div', 'p'], class_=re.compile(r'price|preço|valor', re.I))
-        if price_elem:
-            price_text = price_elem.get_text(strip=True)
-            # Extract number from text like "€ 250.000" or "250.000 €"
-            price_match = re.search(r'[\d.]+', price_text.replace('.', '').replace(',', '.'))
-            if price_match:
-                try:
-                    prop['price'] = int(float(price_match.group().replace('.', '')))
-                except:
-                    pass
-        
-        # Extract address (usually in a link or heading)
-        address_elem = card.find(['a', 'h2', 'h3', 'span'], class_=re.compile(r'address|morada|location|title', re.I))
-        if not address_elem:
-            address_elem = card.find('a', href=re.compile(r'/imovel/|/casa/'))
-        
-        if address_elem:
-            prop['address'] = address_elem.get_text(strip=True)
-            if address_elem.name == 'a' and address_elem.get('href'):
-                prop['url'] = address_elem.get('href') if address_elem.get('href').startswith('http') else f"https://www.idealista.pt{address_elem.get('href')}"
-        
-        # Extract bedrooms (quartos)
-        quartos_elem = card.find(['span', 'div'], class_=re.compile(r'quartos|bedrooms|bed', re.I))
-        if not quartos_elem:
-            # Look for text patterns like "3 quartos" or "3 qts"
-            quartos_text = card.get_text()
-            quartos_match = re.search(r'(\d+)\s*(?:quartos?|qts?|bedrooms?)', quartos_text, re.I)
-            if quartos_match:
-                try:
-                    prop['bedrooms'] = int(quartos_match.group(1))
-                except:
-                    pass
-        else:
-            quartos_text = quartos_elem.get_text(strip=True)
-            quartos_match = re.search(r'(\d+)', quartos_text)
-            if quartos_match:
-                try:
-                    prop['bedrooms'] = int(quartos_match.group(1))
-                except:
-                    pass
-        
-        # Extract bathrooms (casas de banho)
-        banhos_elem = card.find(['span', 'div'], class_=re.compile(r'banhos?|bathrooms?|bath', re.I))
-        if not banhos_elem:
-            banhos_text = card.get_text()
-            banhos_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:casas?\s+de\s+banho|banhos?|baths?)', banhos_text, re.I)
-            if banhos_match:
-                try:
-                    prop['bathrooms'] = float(banhos_match.group(1))
-                except:
-                    pass
-        else:
-            banhos_text = banhos_elem.get_text(strip=True)
-            banhos_match = re.search(r'(\d+(?:\.\d+)?)', banhos_text)
-            if banhos_match:
-                try:
-                    prop['bathrooms'] = float(banhos_match.group(1))
-                except:
-                    pass
-        
-        # Extract area (m²)
-        area_elem = card.find(['span', 'div'], class_=re.compile(r'area|superficie|m2|metros', re.I))
-        if not area_elem:
-            area_text = card.get_text()
-            area_match = re.search(r'(\d+(?:\.\d+)?)\s*m[²2]', area_text, re.I)
-            if area_match:
-                try:
-                    # Convert m² to sqft (approximate: 1 m² = 10.764 sqft)
-                    sqft = int(float(area_match.group(1)) * 10.764)
-                    prop['sqft'] = sqft
-                except:
-                    pass
-        else:
-            area_text = area_elem.get_text(strip=True)
-            area_match = re.search(r'(\d+(?:\.\d+)?)', area_text)
-            if area_match:
-                try:
-                    sqft = int(float(area_match.group(1)) * 10.764)
-                    prop['sqft'] = sqft
-                except:
-                    pass
-        
-        # Extract description
-        desc_elem = card.find(['p', 'div'], class_=re.compile(r'description|descricao|details', re.I))
-        if desc_elem:
-            prop['description'] = desc_elem.get_text(strip=True)[:500]  # Limit description length
-        
-        # Extract city from address
-        if 'address' in prop:
-            # Portuguese addresses often have format: "Street, City, Region"
-            parts = prop['address'].split(',')
-            if len(parts) >= 2:
-                prop['city'] = parts[-2].strip() if len(parts) > 2 else parts[-1].strip()
-        
-        # Only add if we have at least address or price
-        if prop.get('address') or prop.get('price'):
-            try:
-                listing = PropertyListing(
-                    address=prop.get('address', 'Unknown'),
-                    city=prop.get('city', ''),
-                    price=prop.get('price'),
-                    bedrooms=prop.get('bedrooms'),
-                    bathrooms=prop.get('bathrooms'),
-                    sqft=prop.get('sqft'),
-                    description=prop.get('description'),
-                    url=prop.get('url', base_url),
-                    latitude=None,
-                    longitude=None
-                )
-                properties.append(listing)
-            except Exception as e:
-                print(f"[Idealista Parse] Skipping invalid property: {e}")
-    
-    return properties
-
-
-def _parse_imovirtual_html(soup: BeautifulSoup, base_url: str) -> list:
-    """Parse Imovirtual HTML structure"""
-    properties = []
-    
-    # Imovirtual structure: listings are usually in divs with specific classes
-    property_cards = soup.find_all(['article', 'div'], class_=re.compile(r'property|listing|result|item', re.I))
-    
-    for card in property_cards:
-        prop = {}
-        
-        # Extract price
-        price_elem = card.find(['span', 'div', 'strong'], class_=re.compile(r'price|preço', re.I))
-        if price_elem:
-            price_text = price_elem.get_text(strip=True)
-            price_match = re.search(r'[\d.]+', price_text.replace('.', '').replace(',', '.'))
-            if price_match:
-                try:
-                    prop['price'] = int(float(price_match.group().replace('.', '')))
-                except:
-                    pass
-        
-        # Extract address/title
-        title_elem = card.find(['a', 'h2', 'h3'], class_=re.compile(r'title|name|address', re.I))
-        if title_elem:
-            prop['address'] = title_elem.get_text(strip=True)
-            if title_elem.name == 'a' and title_elem.get('href'):
-                prop['url'] = title_elem.get('href') if title_elem.get('href').startswith('http') else f"https://www.imovirtual.com{title_elem.get('href')}"
-        
-        # Extract features (quartos, banhos, area)
-        features_text = card.get_text()
-        
-        # Quartos
-        quartos_match = re.search(r'(\d+)\s*(?:quartos?|qts?)', features_text, re.I)
-        if quartos_match:
-            try:
-                prop['bedrooms'] = int(quartos_match.group(1))
-            except:
-                pass
-        
-        # Banhos
-        banhos_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:casas?\s+de\s+banho|banhos?)', features_text, re.I)
-        if banhos_match:
-            try:
-                prop['bathrooms'] = float(banhos_match.group(1))
-            except:
-                pass
-        
-        # Area
-        area_match = re.search(r'(\d+(?:\.\d+)?)\s*m[²2]', features_text, re.I)
-        if area_match:
-            try:
-                sqft = int(float(area_match.group(1)) * 10.764)
-                prop['sqft'] = sqft
-            except:
-                pass
-        
-        # Extract city
-        if 'address' in prop:
-            parts = prop['address'].split(',')
-            if len(parts) >= 2:
-                prop['city'] = parts[-2].strip() if len(parts) > 2 else parts[-1].strip()
-        
-        if prop.get('address') or prop.get('price'):
-            try:
-                listing = PropertyListing(
-                    address=prop.get('address', 'Unknown'),
-                    city=prop.get('city', ''),
-                    price=prop.get('price'),
-                    bedrooms=prop.get('bedrooms'),
-                    bathrooms=prop.get('bathrooms'),
-                    sqft=prop.get('sqft'),
-                    description=prop.get('description'),
-                    url=prop.get('url', base_url),
-                    latitude=None,
-                    longitude=None
-                )
-                properties.append(listing)
-            except Exception as e:
-                print(f"[Imovirtual Parse] Skipping invalid property: {e}")
-    
-    return properties
-
-
-def _parse_casa_sapo_html(soup: BeautifulSoup, base_url: str) -> list:
-    """Parse Casa Sapo HTML structure"""
-    # Similar structure to Idealista/Imovirtual
-    return _parse_generic_portuguese_html(soup, base_url)
-
-
-def _parse_generic_portuguese_html(soup: BeautifulSoup, base_url: str) -> list:
-    """Generic parser for Portuguese real estate sites"""
-    properties = []
-    
-    # Look for common patterns across Portuguese sites
-    property_cards = soup.find_all(['article', 'div', 'li'], class_=re.compile(r'property|listing|card|item|result', re.I))
-    
-    for card in property_cards:
-        prop = {}
-        card_text = card.get_text()
-        
-        # Price (€ format)
-        price_match = re.search(r'€\s*([\d.\s]+)', card_text)
-        if price_match:
-            try:
-                price_str = price_match.group(1).replace('.', '').replace(' ', '')
-                prop['price'] = int(float(price_str))
-            except:
-                pass
-        
-        # Address (look for Portuguese street patterns)
-        address_elem = card.find(['a', 'h2', 'h3'], href=re.compile(r'/imovel|/casa|/apartamento|/moradia'))
-        if address_elem:
-            prop['address'] = address_elem.get_text(strip=True)
-            if address_elem.name == 'a':
-                prop['url'] = address_elem.get('href')
-        
-        # Quartos
-        quartos_match = re.search(r'(\d+)\s*(?:quartos?|qts?)', card_text, re.I)
-        if quartos_match:
-            try:
-                prop['bedrooms'] = int(quartos_match.group(1))
-            except:
-                pass
-        
-        # Banhos
-        banhos_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:casas?\s+de\s+banho|banhos?)', card_text, re.I)
-        if banhos_match:
-            try:
-                prop['bathrooms'] = float(banhos_match.group(1))
-            except:
-                pass
-        
-        # Area (m²)
-        area_match = re.search(r'(\d+(?:\.\d+)?)\s*m[²2]', card_text, re.I)
-        if area_match:
-            try:
-                sqft = int(float(area_match.group(1)) * 10.764)
-                prop['sqft'] = sqft
-            except:
-                pass
-        
-        # Extract city
-        if 'address' in prop:
-            parts = prop['address'].split(',')
-            if len(parts) >= 2:
-                prop['city'] = parts[-2].strip() if len(parts) > 2 else parts[-1].strip()
-        
-        if prop.get('address') or prop.get('price'):
-            try:
-                listing = PropertyListing(
-                    address=prop.get('address', 'Unknown'),
-                    city=prop.get('city', ''),
-                    price=prop.get('price'),
-                    bedrooms=prop.get('bedrooms'),
-                    bathrooms=prop.get('bathrooms'),
-                    sqft=prop.get('sqft'),
-                    description=prop.get('description'),
-                    url=prop.get('url', base_url),
-                    latitude=None,
-                    longitude=None
-                )
-                properties.append(listing)
-            except Exception as e:
-                print(f"[Generic Parse] Skipping invalid property: {e}")
-    
-    return properties
