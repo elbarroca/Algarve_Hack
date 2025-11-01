@@ -469,27 +469,6 @@ Algarve_Hack/
 │   └── utils/                        # Utility functions
 │       ├── scraper.py                # HTML parsing utilities
 │       └── firecrawl_scraper.py      # Firecrawl integration helpers
-│
-├── frontend/                         # Next.js frontend
-│   ├── app/                          # Next.js app directory
-│   │   ├── components/               # React components
-│   │   │   ├── ChatInterface.tsx     # Main chat UI
-│   │   │   ├── MapView.tsx           # Interactive map display
-│   │   │   ├── PropertyCard.tsx      # Property listing cards
-│   │   │   └── ...                   # Other UI components
-│   │   ├── sections/                 # Page sections
-│   │   ├── services/                 # API client services
-│   │   └── types/                    # TypeScript type definitions
-│   ├── package.json                  # Node.js dependencies
-│   └── tsconfig.json                 # TypeScript configuration
-│
-├── tests/                            # Test suite
-│   ├── test_search_flow.py           # Integration tests
-│   └── test_direct_vapi_call.py      # VAPI call tests
-│
-├── README.MD                         # This file
-├── PRD.MD                            # Product Requirements Document
-└── LICENSE                           # MIT License
 ```
 
 ---
