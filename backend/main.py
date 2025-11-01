@@ -3,7 +3,7 @@ Estate Search Main - Coordinator with REST API
 """
 import asyncio
 from uagents import Agent, Context, Model, Bureau
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from models import (
     ScopingRequest,
     ScopingResponse,
@@ -46,6 +46,18 @@ class NegotiateRequest(Model):
     name: str
     email: str
     additional_info: str = ""
+    # Detailed listing data - when provided, skips prober agent and goes straight to VAPI
+    listing_data: Optional[Dict[str, Any]] = None  # Full property listing details
+    # Required fields in listing_data for direct VAPI call:
+    # - contact_phone: Phone number to call (required)
+    # - price: Monthly rent or sale price
+    # - title: Property title/description
+    # Optional but recommended:
+    # - bedrooms, bathrooms, sqft
+    # - amenities, features
+    # - availability_date
+    # - description
+    skip_research: bool = False  # Set to True to skip prober and go straight to VAPI
 
 
 class NegotiateResponse(Model):
@@ -54,6 +66,10 @@ class NegotiateResponse(Model):
     leverage_score: float
     next_actions: list
     call_summary: str = ""
+    # Structured outcomes from VAPI call
+    availability_date: Optional[str] = None
+    price_flexibility: Optional[str] = None
+    tenant_requirements: Optional[str] = None
 
 
 def main():
@@ -533,64 +549,140 @@ def main():
         session_id = str(uuid.uuid4())
 
         try:
-            # Send probe request to prober agent
-            ctx.logger.info(f"📤 Sending probe request to prober agent...")
-            await ctx.send(
-                prober_address,
-                ProberRequest(
-                    address=req.address,
-                    session_id=session_id
-                )
+            # Check if we should skip research and go straight to VAPI
+            has_contact_phone = req.listing_data and (
+                req.listing_data.get("contact_phone") or
+                req.listing_data.get("seller_phone")
             )
+            should_skip_research = req.skip_research or has_contact_phone
 
-            # Wait for prober response (60 seconds timeout)
-            for _ in range(120):  # 60 seconds (120 * 0.5s)
-                if session_id in prober_sessions:
-                    break
-                await asyncio.sleep(0.5)
+            if should_skip_research and has_contact_phone:
+                ctx.logger.info("✅ Detailed listing data provided with contact phone")
+                ctx.logger.info("⚡ Skipping prober agent - going straight to VAPI call")
+
+                # Build intelligence from listing data
+                contact_phone = req.listing_data.get("contact_phone") or req.listing_data.get("seller_phone")
+                ctx.logger.info(f"📞 Contact phone: {contact_phone}")
+
+                # Create minimal intelligence structure for VAPI
+                intelligence_dict = {
+                    "leverage_score": 5.0,  # Neutral score since no research
+                    "overall_assessment": f"Direct inquiry about property at {req.address}. "
+                                        f"Student seeking information on availability, pricing, and tenant requirements.",
+                    "findings": [
+                        {
+                            "category": "direct_inquiry",
+                            "summary": f"Direct contact with listing agent for {req.address}",
+                            "details": f"Property details: {req.listing_data.get('title', 'N/A')}. "
+                                     f"Price: €{req.listing_data.get('price', 'N/A')}/month. "
+                                     f"Seeking information about availability and tenant requirements.",
+                            "leverage_score": 5.0,
+                            "source_url": None
+                        }
+                    ],
+                    "property": {
+                        "address": req.address,
+                        "contact_phone": contact_phone,
+                        "seller_phone": req.listing_data.get("seller_phone"),
+                        "seller_name": req.listing_data.get("seller_name"),
+                        "contact_email": req.listing_data.get("contact_email"),
+                        **req.listing_data  # Include all listing data
+                    }
+                }
+
+                # Skip directly to VAPI call
+                leverage_score = 5.0
+                next_actions = [
+                    "Call will be placed to listing agent",
+                    "Ask about availability dates",
+                    "Discuss pricing and flexibility",
+                    "Understand tenant requirements"
+                ]
+
             else:
-                ctx.logger.error("❌ Timeout waiting for prober response")
-                return NegotiateResponse(
-                    success=False,
-                    message="Timeout waiting for property intelligence. Please try again.",
-                    leverage_score=0.0,
-                    next_actions=[]
+                # Original flow: use prober agent for research
+                ctx.logger.info(f"📤 Sending probe request to prober agent...")
+                await ctx.send(
+                    prober_address,
+                    ProberRequest(
+                        address=req.address,
+                        session_id=session_id
+                    )
                 )
 
-            # Get prober response
-            prober_result = prober_sessions.pop(session_id)
+                # Wait for prober response (120 seconds timeout - increased from 60)
+                for _ in range(240):  # 120 seconds (240 * 0.5s)
+                    if session_id in prober_sessions:
+                        break
+                    await asyncio.sleep(0.5)
+                else:
+                    ctx.logger.error("❌ Timeout waiting for prober response")
+                    return NegotiateResponse(
+                        success=False,
+                        message="Timeout waiting for property intelligence. Please try again.",
+                        leverage_score=0.0,
+                        next_actions=[]
+                    )
 
-            # Convert findings to dict format for Vapi
-            findings_data = [
-                {
-                    "category": f.category,
-                    "summary": f.summary,
-                    "leverage_score": f.leverage_score,
-                    "details": f.details,
-                    "source_url": f.source_url
-                }
-                for f in prober_result.findings
-            ]
+                # Get prober response
+                prober_result = prober_sessions.pop(session_id)
 
-            # Create structured JSON for Vapi system prompt
-            vapi_context = {
-                "property": {
-                    "address": req.address,
-                },
-                "user": {
-                    "name": req.name,
-                    "email": req.email,
-                    "preferences": req.additional_info
-                },
-                "intelligence": {
+                # Extract contact info from listing data if provided
+                contact_phone = None
+                seller_phone = None
+                seller_name = None
+                contact_email = None
+
+                if req.listing_data:
+                    contact_phone = req.listing_data.get("contact_phone") or req.listing_data.get("seller_phone")
+                    seller_phone = req.listing_data.get("seller_phone")
+                    seller_name = req.listing_data.get("seller_name")
+                    contact_email = req.listing_data.get("contact_email")
+                    ctx.logger.info(f"📞 Found contact info from listing:")
+                    ctx.logger.info(f"   Contact Phone: {contact_phone}")
+                    ctx.logger.info(f"   Seller Phone: {seller_phone}")
+                    ctx.logger.info(f"   Seller Name: {seller_name}")
+                else:
+                    ctx.logger.warning(f"⚠️ No listing data provided - will use fallback phone number")
+
+                # Convert findings to dict format for Vapi
+                findings_data = [
+                    {
+                        "category": f.category,
+                        "summary": f.summary,
+                        "leverage_score": f.leverage_score,
+                        "details": f.details,
+                        "source_url": f.source_url
+                    }
+                    for f in prober_result.findings
+                ]
+
+                # Use prober results for intelligence
+                intelligence_dict = {
                     "leverage_score": prober_result.leverage_score,
                     "overall_assessment": prober_result.overall_assessment,
-                    "findings": findings_data
+                    "findings": findings_data,
+                    # Include property data in intelligence so Vapi agent can access contact info
+                    "property": {
+                        "address": req.address,
+                        # Contact info from listing data
+                        "contact_phone": contact_phone,
+                        "seller_phone": seller_phone,
+                        "seller_name": seller_name,
+                        "contact_email": contact_email,
+                        # Include full listing data if provided
+                        **(req.listing_data or {})
+                    }
                 }
-            }
+
+                leverage_score = prober_result.leverage_score
+                next_actions = []  # Will be generated by LLM later
 
             # Call Vapi agent to make the negotiation call
             ctx.logger.info("📞 Sending request to Vapi agent...")
+            ctx.logger.info(f"   Intelligence score: {leverage_score}/10")
+            ctx.logger.info(f"   Contact phone: {intelligence_dict['property'].get('contact_phone', 'N/A')}")
+
             await ctx.send(
                 vapi_address,
                 VapiRequest(
@@ -598,7 +690,7 @@ def main():
                     user_name=req.name,
                     user_email=req.email,
                     user_preferences=req.additional_info,
-                    intelligence=vapi_context['intelligence'],
+                    intelligence=intelligence_dict,
                     session_id=session_id
                 )
             )
@@ -614,15 +706,29 @@ def main():
 
             vapi_result = vapi_sessions.pop(session_id, None)
             vapi_call_summary = ""
+            availability_date = None
+            price_flexibility = None
+            tenant_requirements = None
+
             if vapi_result and vapi_result.status == "success":
                 ctx.logger.info(f"✅ Vapi call completed! Call ID: {vapi_result.call_id}")
                 vapi_call_summary = vapi_result.call_summary or ""
+                # Extract structured outcomes from Vapi response
+                availability_date = vapi_result.availability_date
+                price_flexibility = vapi_result.price_flexibility
+                tenant_requirements = vapi_result.tenant_requirements
+                ctx.logger.info(f"📊 Extracted outcomes:")
+                ctx.logger.info(f"   Availability: {availability_date}")
+                ctx.logger.info(f"   Price Flexibility: {price_flexibility}")
+                ctx.logger.info(f"   Tenant Requirements: {tenant_requirements}")
             else:
                 ctx.logger.warning("⚠️ Vapi call may be in progress")
 
-            # Generate AI summary and next actions
-            ctx.logger.info("📝 Generating negotiation summary with LLM...")
-            summary_prompt = f"""Based on the following property intelligence, create a concise negotiation summary and actionable next steps.
+            # Generate AI summary and next actions (only if we used prober agent)
+            if not should_skip_research:
+                # We have prober_result, generate detailed summary
+                ctx.logger.info("📝 Generating negotiation summary with LLM...")
+                summary_prompt = f"""Based on the following property intelligence, create a concise negotiation summary and actionable next steps.
 
 Property: {req.address}
 User: {req.name}
@@ -646,28 +752,36 @@ Generate ONLY valid JSON with this exact structure:
 
 Focus on practical, actionable steps the buyer should take next."""
 
-            summary_result = await llm_summarizer.query_with_json(summary_prompt, temperature=0.5)
+                summary_result = await llm_summarizer.query_with_json(summary_prompt, temperature=0.5)
 
-            if summary_result.get("success"):
-                summary_data = summary_result.get("data", {})
-                ai_summary = summary_data.get("summary", prober_result.overall_assessment)
-                next_actions = summary_data.get("next_actions", [])
+                if summary_result.get("success"):
+                    summary_data = summary_result.get("data", {})
+                    ai_summary = summary_data.get("summary", prober_result.overall_assessment)
+                    next_actions = summary_data.get("next_actions", [])
+                else:
+                    ai_summary = prober_result.overall_assessment
+                    next_actions = [
+                        "Review the identified leverage points carefully",
+                        "Prepare your negotiation strategy based on findings",
+                        "Contact the listing agent to initiate discussions"
+                    ]
+
+                ctx.logger.info(f"✅ Summary generated with {len(next_actions)} action items")
             else:
-                ai_summary = prober_result.overall_assessment
-                next_actions = [
-                    "Review the identified leverage points carefully",
-                    "Prepare your negotiation strategy based on findings",
-                    "Contact the listing agent to initiate discussions"
-                ]
-
-            ctx.logger.info(f"✅ Summary generated with {len(next_actions)} action items")
+                # Skipped research, use simple summary
+                ai_summary = intelligence_dict['overall_assessment']
+                # next_actions already defined earlier when we set up intelligence_dict
+                ctx.logger.info(f"✅ Using direct call summary with {len(next_actions)} action items")
 
             return NegotiateResponse(
                 success=True,
                 message=ai_summary,
-                leverage_score=prober_result.leverage_score,
+                leverage_score=leverage_score,  # Use leverage_score variable, not prober_result
                 next_actions=next_actions,
-                call_summary=vapi_call_summary
+                call_summary=vapi_call_summary,
+                availability_date=availability_date,
+                price_flexibility=price_flexibility,
+                tenant_requirements=tenant_requirements
             )
 
         except Exception as e:
@@ -683,6 +797,7 @@ Focus on practical, actionable steps the buyer should take next."""
 
     # Create Bureau to run all agents
     bureau = Bureau(port=8080, endpoint="http://localhost:8080/submit")
+    bureau.add(coordinator)
     bureau.add(scoping_agent)
     bureau.add(research_agent)
     bureau.add(general_agent)
@@ -691,7 +806,6 @@ Focus on practical, actionable steps the buyer should take next."""
     bureau.add(community_analysis_agent)
     bureau.add(prober_agent)
     bureau.add(vapi_agent)
-    bureau.add(coordinator)
 
     print("All agents configured")
     print(f"   - REST API: http://localhost:8080/api/chat")

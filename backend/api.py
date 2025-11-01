@@ -15,10 +15,14 @@ import asyncio
 import uvicorn
 import uuid
 from uagents import Bureau
+import httpx
 
 from agents.prober_agent import create_prober_agent
 from agents.vapi_agent import create_vapi_agent, VapiRequest, VapiResponse
-from models import ProberRequest, ProberResponse, ProberFinding
+from models import (
+    ProberRequest, ProberResponse, ProberFinding,
+    VapiNegotiateRequest, VapiNegotiateResponse
+)
 from llm_client import SimpleLLMAgent
 
 
@@ -29,6 +33,9 @@ class NegotiateRequest(BaseModel):
     name: str
     email: str
     additional_info: Optional[str] = None
+    # Optional listing data with contact info (from research results)
+    listing_data: Optional[dict] = None  # Property listing with contact_phone, seller_phone, etc.
+    skip_research: bool = False  # Set to True to skip prober and go straight to VAPI
 
 
 class NegotiateResponse(BaseModel):
@@ -40,6 +47,10 @@ class NegotiateResponse(BaseModel):
     call_status: Optional[str] = None
     call_id: Optional[str] = None
     call_summary: Optional[str] = None
+    # Structured outcomes from VAPI call
+    availability_date: Optional[str] = None
+    price_flexibility: Optional[str] = None
+    tenant_requirements: Optional[str] = None
 
 
 # Initialize FastAPI and Agents
@@ -184,6 +195,24 @@ Focus on practical, actionable steps the buyer should take next."""
 
     print(f"✅ Summary generated with {len(next_actions)} action items")
 
+    # Extract contact info from listing data if provided
+    contact_phone = None
+    seller_phone = None
+    seller_name = None
+    contact_email = None
+    
+    if request.listing_data:
+        contact_phone = request.listing_data.get("contact_phone") or request.listing_data.get("seller_phone")
+        seller_phone = request.listing_data.get("seller_phone")
+        seller_name = request.listing_data.get("seller_name")
+        contact_email = request.listing_data.get("contact_email")
+        print(f"📞 Found contact info from listing:")
+        print(f"   Contact Phone: {contact_phone}")
+        print(f"   Seller Phone: {seller_phone}")
+        print(f"   Seller Name: {seller_name}")
+    else:
+        print(f"⚠️ No listing data provided - will use fallback phone number")
+
     # Convert ProberResponse findings to dict format for Vapi
     intelligence_dict = {
         "leverage_score": prober_result.leverage_score,
@@ -197,7 +226,18 @@ Focus on practical, actionable steps the buyer should take next."""
                 "source_url": f.source_url
             }
             for f in prober_result.findings
-        ]
+        ],
+        # Include property data structure for Vapi agent to access contact info
+        "property": {
+            "address": request.address,
+            # Contact info from listing data
+            "contact_phone": contact_phone,
+            "seller_phone": seller_phone,
+            "seller_name": seller_name,
+            "contact_email": contact_email,
+            # Include full listing data if provided
+            **(request.listing_data or {})
+        }
     }
 
     # Call Vapi agent with prober_result + user preferences
@@ -225,17 +265,31 @@ Focus on practical, actionable steps the buyer should take next."""
             await asyncio.sleep(1)
             waited += 1
 
+        # Extract structured outcomes
+        availability_date = None
+        price_flexibility = None
+        tenant_requirements = None
+
         if session_id in vapi_responses:
             vapi_result = vapi_responses.pop(session_id)
             call_status = vapi_result.status
             call_id = vapi_result.call_id
             call_summary = vapi_result.call_summary
-            
+
+            # Extract outcomes from vapi result
+            availability_date = vapi_result.availability_date
+            price_flexibility = vapi_result.price_flexibility
+            tenant_requirements = vapi_result.tenant_requirements
+
             if vapi_result.status == "success":
                 print(f"✅ Vapi call completed successfully!")
                 print(f"   Call ID: {call_id}")
                 if call_summary:
                     print(f"   Summary: {call_summary[:100]}...")
+                print(f"📊 Extracted outcomes:")
+                print(f"   Availability: {availability_date}")
+                print(f"   Price Flexibility: {price_flexibility}")
+                print(f"   Tenant Requirements: {tenant_requirements}")
             else:
                 print(f"⚠️ Vapi call failed: {vapi_result.message}")
         else:
@@ -253,8 +307,106 @@ Focus on practical, actionable steps the buyer should take next."""
         next_actions=next_actions,
         call_status=call_status,
         call_id=call_id,
-        call_summary=call_summary
+        call_summary=call_summary,
+        availability_date=availability_date,
+        price_flexibility=price_flexibility,
+        tenant_requirements=tenant_requirements
     )
+
+
+@app.post("/api/vapi/negotiate", response_model=VapiNegotiateResponse)
+async def negotiate_property_call(request: VapiNegotiateRequest):
+    """
+    Initiate a Vapi call for property negotiation using rental listing data.
+    
+    This endpoint:
+    1. Takes property listing details from research_agent results
+    2. Accepts user contact information 
+    3. Uses Vapi agent to make a negotiation call with all the intelligence data
+    4. Returns call ID and status
+    """
+    try:
+        # Extract property details
+        property_data = request.property
+        property_address = property_data.get("address", "")
+        property_price = property_data.get("price", 0)
+        property_details = property_data.get("details", {})
+        
+        # Extract user details
+        user_data = request.user
+        user_name = user_data.get("name", "")
+        user_email = user_data.get("email", "")
+        user_phone = user_data.get("phone", "")
+        user_preferences = user_data.get("preferences", "")
+        
+        # Prepare negotiation intelligence
+        negotiation_context = {
+            "property": {
+                "address": property_address,
+                "price": property_price,
+                "details": property_details,
+                "url": property_data.get("url", ""),
+                "images": property_data.get("images", []),
+                "description": property_data.get("description", ""),
+                # 🔧 ADDED: Ensure contact information is passed to Vapi agent
+                "contact_phone": property_data.get("contact_phone") or property_data.get("seller_phone"),
+                "seller_phone": property_data.get("seller_phone"),
+                "seller_name": property_data.get("seller_name"),
+                "contact_email": property_data.get("contact_email")
+            },
+            "user": {
+                "name": user_name,
+                "email": user_email,
+                "phone": user_phone,
+                "preferences": user_preferences
+            },
+            "intelligence": request.intelligence
+        }
+        
+        # Prepare Vapi agent request
+        vapi_request = {
+            "property_address": property_address,
+            "user_name": user_name,
+            "user_email": user_email,
+            "user_preferences": user_preferences,
+            "intelligence": negotiation_context,
+            "session_id": request.session_id or "negotiation_session"
+        }
+        
+        # Make request to Vapi agent
+        agent_url = f"http://localhost:{8008}/submit"
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(agent_url, json=vapi_request, timeout=30.0)
+            
+            if response.status_code != 200:
+                return VapiNegotiateResponse(
+                    success=False,
+                    error=f"Vapi agent request failed: {response.status_code}"
+                )
+            
+            vapi_result = response.json()
+            
+            return VapiNegotiateResponse(
+                success=True,
+                call_id=vapi_result.get("call_id"),
+                status=vapi_result.get("status"),
+                message=vapi_result.get("message"),
+                session_id=vapi_result.get("session_id"),
+                call_summary=vapi_result.get("call_summary"),
+                negotiation_details={
+                    "property_address": property_address,
+                    "user_name": user_name,
+                    "leverage_score": request.intelligence.get("leverage_score", 0),
+                    "findings_count": len(request.intelligence.get("findings", []))
+                }
+            )
+            
+    except Exception as e:
+        return VapiNegotiateResponse(
+            success=False,
+            error=f"Negotiation call failed: {str(e)}"
+        )
 
 
 def start_workflow():

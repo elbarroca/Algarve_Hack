@@ -8,6 +8,7 @@ This file contains all the uAgents models used across the system.
 from __future__ import annotations
 from typing import List, Optional
 from uagents import Model
+from pydantic import BaseModel
 
 
 # Base Models (defined first to avoid forward references)
@@ -196,3 +197,28 @@ class EstateSearchResult(Model):
     properties: List[PropertyListing]
     search_summary: str
     session_id: str
+
+
+class VapiNegotiateRequest(BaseModel):
+    """Request model for Vapi negotiation endpoint"""
+    property: dict  # Property details from research_agent
+    user: dict      # User contact information
+    intelligence: dict  # Listing intelligence from prober agent
+    session_id: Optional[str] = None
+
+
+class VapiNegotiateResponse(BaseModel):
+    """Response model for Vapi negotiation endpoint"""
+    success: bool
+    call_id: Optional[str] = None
+    status: Optional[str] = None
+    message: Optional[str] = None
+    session_id: Optional[str] = None
+    call_summary: Optional[str] = None
+    negotiation_details: Optional[dict] = None
+    error: Optional[str] = None
+    # Structured outcomes from call
+    availability_date: Optional[str] = None
+    price_flexibility: Optional[str] = None
+    tenant_requirements: Optional[str] = None
+    next_steps: Optional[List[str]] = None
