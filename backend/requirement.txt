@@ -1,0 +1,19 @@
+# Core uAgents framework
+uagents>=0.22.10
+
+# API Server
+fastapi>=0.115.0
+uvicorn>=0.38.0
+
+# LLM and AI
+aiohttp>=3.13.1
+python-dotenv>=1.1.1
+
+# Data validation
+pydantic>=2.12.3
+
+# Async support
+asyncio-contextmanager>=1.0.0
+
+# MCP SDK for Bright Data integration
+mcp>=1.0.0
