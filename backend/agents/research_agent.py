@@ -55,25 +55,44 @@ def filter_results_by_location(search_results: list, required_location: str) -> 
 
 
 def _build_search_query(requirements) -> str:
-    """Construct optimized search query from user requirements."""
-    parts = [requirements.location]
-
-    if "CA" not in requirements.location.upper() and "CALIFORNIA" not in requirements.location.upper():
-        parts.append("California")
-
-    if requirements.bedrooms:
-        parts.append(f"{requirements.bedrooms} bedroom")
-    if requirements.bathrooms:
-        parts.append(f"{requirements.bathrooms} bath")
+    """Construct optimized search query from user requirements for Portuguese Algarve market."""
+    parts = []
     
-    parts.append("homes for sale")
+    # Use Portuguese location - default to Algarve if not specified
+    location_lower = requirements.location.lower() if requirements.location else ""
+    if not any(city in location_lower for city in ['algarve', 'faro', 'loulé', 'portimão', 'lagos', 'albufeira', 'tavira', 'silves']):
+        # If not already in Algarve, add it for focus
+        parts.append("Algarve Portugal")
+    else:
+        parts.append(requirements.location)
+    
+    # Portuguese property type mapping
+    if requirements.bedrooms is not None:
+        if requirements.bedrooms == 0:
+            parts.append("T0")  # Studio
+        elif requirements.bedrooms == 1:
+            parts.append("T1")  # 1 bedroom
+        elif requirements.bedrooms == 2:
+            parts.append("T2")  # 2 bedroom
+        elif requirements.bedrooms == 3:
+            parts.append("T3")  # 3 bedroom
+        else:
+            parts.append(f"{requirements.bedrooms} quartos")
+    else:
+        parts.append("quartos")  # rooms
+
+    # Focus on long-term rentals (arrendamento)
+    parts.append("arrendamento")
+    
+    # Portuguese portals to target
+    parts.append("site:idealista.pt OR site:imovirtual.com OR site:casasapo.pt OR site:olx.pt")
 
     if requirements.budget_max:
         if requirements.budget_max < 1000000:
-            parts.append(f"under ${requirements.budget_max//1000}k")
+            parts.append(f"até {requirements.budget_max} euros")
         else:
             mil = requirements.budget_max / 1000000
-            parts.append(f"under ${mil:.1f}M")
+            parts.append(f"até {mil:.1f} milhões euros")
 
     return " ".join(parts)
 
