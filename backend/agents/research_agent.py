@@ -644,6 +644,10 @@ def create_research_agent(port: int = 8002):
     @agent.on_message(model=ResearchRequest)
     async def handle_request(ctx: Context, sender: str, msg: ResearchRequest):
         req = msg.requirements
+        
+        # Initialize variables that might be used later
+        scraped_properties_data = []
+        organic_results = []
 
         # Build search query for Bright Data - Portuguese real estate search (RENTALS ONLY)
         prompt_parts = [req.location]
@@ -688,7 +692,7 @@ def create_research_agent(port: int = 8002):
         ctx.logger.info(f"Raw Bright Data output: {raw_output[:500]}...")
 
         properties = []
-        organic_results = []
+        # organic_results already initialized at function start
         result_images = []  # Store images for all results
 
         try:
@@ -733,7 +737,7 @@ def create_research_agent(port: int = 8002):
                     # Portuguese real estate sites for scraping
                     portuguese_sites = ['idealista.pt', 'imovirtual.com', 'casa.sapo.pt', 'imoovivo.com', 'supercasa.pt']
                     
-                    scraped_properties_data = []  # Store raw property data - defined outside loop
+                    # scraped_properties_data already initialized at function start
                     
                     # Create semaphore for listing page scraping (increase from 5 to 8 for faster processing)
                     listing_semaphore = asyncio.Semaphore(8)
