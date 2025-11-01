@@ -56,7 +56,7 @@ class TestSearchFlow:
             print(f"❌ Backend health check failed: {e}")
             return False
     
-    def _send_chat_request(self, message: str, session_id: str, timeout: int = 180) -> Dict[str, Any]:
+    def _send_chat_request(self, message: str, session_id: str, timeout: int = 800) -> Dict[str, Any]:
         """Send chat request to backend and wait for response"""
         print(f"\n📤 Sending chat request...")
         print(f"   Message: {message}")
@@ -198,7 +198,7 @@ class TestSearchFlow:
                     "gallery_available": bool(self._get_image_for_property(i, raw_results))
                 },
                 "contact_ready": True,
-                "negotiation_score": self._calculate_negotiation_score(prop)
+                "negotiation_score": prop.get("negotiation_score", 5.0)  # Use score from backend
             }
             organized["properties"].append(organized_property)
         
@@ -219,17 +219,7 @@ class TestSearchFlow:
             return raw_results[index].get('image_url')
         return None
     
-    def _calculate_negotiation_score(self, property_data: Dict[str, Any]) -> float:
-        """Calculate a simple negotiation score based on property data"""
-        score = 5.0  # Base score
-        
-        price = property_data.get("price", 0)
-        if price > 500000:
-            score += 1.0
-        elif price < 200000:
-            score -= 0.5
-            
-        return round(score, 1)
+    # Removed _calculate_negotiation_score - now using dynamic score from backend
     
     def _print_organized_results(self, organized_results: Dict[str, Any]):
         """Print organized results in a readable format"""

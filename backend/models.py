@@ -33,6 +33,19 @@ class PropertyListing(Model):
     url: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    negotiation_score: Optional[float] = None  # Dynamic score 0-10 based on property characteristics
+    # Contact information
+    contact_phone: Optional[str] = None
+    contact_email: Optional[str] = None
+    seller_name: Optional[str] = None
+    seller_url: Optional[str] = None
+    # Images
+    image_url: Optional[str] = None  # Primary image URL
+    images: Optional[List[str]] = None  # List of all image URLs
+    # Additional details
+    property_type: Optional[str] = None  # e.g., "T2", "Apartment", "House"
+    price_type: Optional[str] = None  # e.g., "rent", "sale"
+    original_price: Optional[int] = None  # Original price before reduction
 
 
 # Scoping Agent Models

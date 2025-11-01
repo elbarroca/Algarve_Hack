@@ -1,5 +1,6 @@
 from uagents import Agent, Context
-from models import ResearchRequest, ResearchResponse, PropertyListing
+from models import ResearchRequest, ResearchResponse, PropertyListing, UserRequirements
+from typing import Optional
 from clients.brigthdata import BrightDataClient
 from clients.firecrawl_mcp import get_firecrawl_mcp_client
 from utils.scraper import (
@@ -388,9 +389,16 @@ def score_property_match(prop_data: dict, requirements) -> float:
     """
     score = 0.0
     
-    # Extract property details
-    price_info = prop_data.get('price', {})
-    price_amount = price_info.get('amount')
+    # Extract property details - handle both raw and formatted structures
+    price_amount = None
+    if 'price' in prop_data:
+        if isinstance(prop_data['price'], dict):
+            # Formatted structure: {'price': {'amount': 1250, ...}}
+            price_amount = prop_data['price'].get('amount')
+        else:
+            # Raw structure: {'price': 1250}
+            price_amount = prop_data['price']
+    
     if isinstance(price_amount, str):
         # Extract numeric value from strings like "1250€"
         try:
@@ -398,16 +406,23 @@ def score_property_match(prop_data: dict, requirements) -> float:
         except:
             price_amount = None
     
-    bedrooms = prop_data.get('property_details', {}).get('bedrooms')
+    bedrooms = None
+    if 'property_details' in prop_data and isinstance(prop_data.get('property_details'), dict):
+        bedrooms = prop_data['property_details'].get('bedrooms')
     if not bedrooms:
         bedrooms = prop_data.get('bedrooms')
     
-    bathrooms = prop_data.get('property_details', {}).get('bathrooms')
+    bathrooms = None
+    if 'property_details' in prop_data and isinstance(prop_data.get('property_details'), dict):
+        bathrooms = prop_data['property_details'].get('bathrooms')
     if not bathrooms:
         bathrooms = prop_data.get('bathrooms')
     
     location = prop_data.get('location', {})
-    address = location.get('full_address', '') or location.get('street', '')
+    if isinstance(location, dict):
+        address = location.get('full_address', '') or location.get('street', '')
+    else:
+        address = str(location) if location else ''
     
     # 1. Bedrooms match (40 points max)
     if requirements.bedrooms and bedrooms:
@@ -481,14 +496,135 @@ def score_property_match(prop_data: dict, requirements) -> float:
     completeness_bonus = 0.0
     if prop_data.get('description'):
         completeness_bonus += 1.0
-    if prop_data.get('images'):
+    images = prop_data.get('images', [])
+    if images and len(images) > 0:
         completeness_bonus += 2.0
+    # Check coordinates - can be at root or in location dict
     if prop_data.get('latitude') and prop_data.get('longitude'):
         completeness_bonus += 2.0
+    elif isinstance(location, dict):
+        if location.get('latitude') and location.get('longitude'):
+            completeness_bonus += 2.0
     score += completeness_bonus
     
     # Ensure score is between 0 and 100
     return max(0.0, min(100.0, score))
+
+
+def calculate_negotiation_score(prop_data: dict, requirements: Optional[UserRequirements] = None) -> float:
+    """
+    Calculate negotiation score (0-10) based on factors that indicate negotiation potential.
+    Higher score = more negotiation leverage for the buyer.
+    
+    Factors considered:
+    - Price relative to budget (lower price = higher leverage)
+    - Description keywords indicating seller motivation
+    - Property condition indicators
+    - Price per square meter (if available)
+    - Missing information (indicates potential issues)
+    """
+    score = 5.0  # Base score (neutral)
+    
+    # Extract price
+    price_amount = None
+    if 'price' in prop_data:
+        if isinstance(prop_data['price'], dict):
+            price_amount = prop_data['price'].get('amount')
+        else:
+            price_amount = prop_data['price']
+    
+    if isinstance(price_amount, str):
+        try:
+            price_amount = float(''.join(filter(str.isdigit, str(price_amount))))
+        except:
+            price_amount = None
+    
+    # Extract description
+    description = prop_data.get('description', '') or prop_data.get('details', '') or ''
+    desc_lower = description.lower()
+    
+    # Factor 1: Price relative to budget (if budget available)
+    if requirements and requirements.budget_max and price_amount:
+        # Convert budget_max from annual to monthly if needed
+        budget_monthly = requirements.budget_max
+        if requirements.budget_max > 10000:
+            budget_monthly = requirements.budget_max / 12
+        
+        if price_amount > 0:
+            price_ratio = price_amount / budget_monthly if budget_monthly > 0 else 1.0
+            
+            # Lower price relative to budget = more negotiation room
+            if price_ratio < 0.6:
+                score += 1.5  # Well below budget - seller might be flexible
+            elif price_ratio < 0.8:
+                score += 1.0  # Below budget - some negotiation room
+            elif price_ratio > 1.2:
+                score -= 0.5  # Over budget - seller might be firm
+    
+    # Factor 2: Description keywords indicating seller motivation or issues
+    motivation_keywords = [
+        'as-is', 'as is', 'needs renovation', 'needs work', 'fixer upper',
+        'motivated seller', 'must sell', 'quick sale', 'reduced', 'price drop',
+        'foreclosure', 'bank owned', 'estate sale', 'divorce', 'relocation',
+        'vacant', 'empty', 'unoccupied', 'distressed', 'below market'
+    ]
+    
+    for keyword in motivation_keywords:
+        if keyword in desc_lower:
+            score += 0.8  # Strong indicator of negotiation potential
+            break
+    
+    # Factor 3: Property condition indicators
+    condition_keywords = [
+        'needs repair', 'needs maintenance', 'handyman special', 'fixer',
+        'cosmetic updates', 'updating needed', 'original condition',
+        'dated', 'outdated', 'old', 'needs updating'
+    ]
+    
+    for keyword in condition_keywords:
+        if keyword in desc_lower:
+            score += 0.5
+            break
+    
+    # Factor 4: Price per square meter (if available)
+    sqft = prop_data.get('sqft') or prop_data.get('sqft_living') or prop_data.get('square_feet')
+    if price_amount and sqft and sqft > 0:
+        price_per_sqm = price_amount / (sqft / 10.764)  # Convert sqft to m²
+        # Very low price per sqm might indicate negotiation potential
+        if price_per_sqm < 500:  # Adjust threshold based on market
+            score += 0.5
+    
+    # Factor 5: Missing information (indicates potential issues)
+    missing_fields = 0
+    if not prop_data.get('bedrooms'):
+        missing_fields += 1
+    if not prop_data.get('bathrooms'):
+        missing_fields += 1
+    if not prop_data.get('sqft') and not prop_data.get('sqft_living'):
+        missing_fields += 1
+    if not description or len(description) < 50:
+        missing_fields += 1
+    
+    if missing_fields >= 3:
+        score += 0.5  # Missing info might indicate motivated seller
+    
+    # Factor 6: Negative description indicators
+    negative_keywords = [
+        'no photos', 'photo coming soon', 'see agent remarks',
+        'call for details', 'contact agent', 'needs inspection'
+    ]
+    
+    for keyword in negative_keywords:
+        if keyword in desc_lower:
+            score += 0.3
+            break
+    
+    # Factor 7: Long time on market indicators (if we can detect)
+    if 'days on market' in desc_lower or 'dom' in desc_lower:
+        score += 0.5
+    
+    # Ensure score is between 0 and 10
+    return round(max(0.0, min(10.0, score)), 1)
 
 
 def create_research_agent(port: int = 8002):
@@ -599,8 +735,8 @@ def create_research_agent(port: int = 8002):
                     
                     scraped_properties_data = []  # Store raw property data - defined outside loop
                     
-                    # Create semaphore for listing page scraping (max 5 concurrent)
-                    listing_semaphore = asyncio.Semaphore(5)
+                    # Create semaphore for listing page scraping (increase from 5 to 8 for faster processing)
+                    listing_semaphore = asyncio.Semaphore(8)
                     
                     # Scrape all listing pages in parallel
                     ctx.logger.info(f"Scraping {len(results_to_scrape)} listing pages in parallel...")
@@ -640,14 +776,14 @@ def create_research_agent(port: int = 8002):
                     
                     if all_rental_properties:
                         # Limit to reasonable number before scraping (to avoid scraping too many)
-                        # We'll scrape more and then filter to top 20
-                        max_properties_to_scrape = min(len(all_rental_properties), 50)  # Scrape up to 50, then filter to top 20
+                        # Reduce from 50 to 30 for faster processing
+                        max_properties_to_scrape = min(len(all_rental_properties), 10)  # Scrape up to 30, then filter to top 20
                         properties_to_scrape = all_rental_properties[:max_properties_to_scrape]
                         
                         ctx.logger.info(f"Scraping {len(properties_to_scrape)} rental properties in parallel (will filter to top 20 best matches)...")
                         
-                        # Create semaphore to limit concurrent requests (max 10 at a time)
-                        property_semaphore = asyncio.Semaphore(10)
+                        # Create semaphore to limit concurrent requests (increase from 10 to 15 for faster processing)
+                        property_semaphore = asyncio.Semaphore(15)
                         
                         # Create tasks for parallel scraping
                         scrape_tasks = [
@@ -716,7 +852,20 @@ def create_research_agent(port: int = 8002):
                                     description=prop_data.get('description', ''),
                                     url=prop_url,
                                     latitude=prop_data.get('latitude'),
-                                    longitude=prop_data.get('longitude')
+                                    longitude=prop_data.get('longitude'),
+                                    negotiation_score=calculate_negotiation_score(prop_data, req),
+                                    # Contact information
+                                    contact_phone=prop_data.get('seller_phone') or (prop_data.get('seller', {}).get('phone') if isinstance(prop_data.get('seller'), dict) else None),
+                                    contact_email=prop_data.get('seller_email') or (prop_data.get('seller', {}).get('email') if isinstance(prop_data.get('seller'), dict) else None),
+                                    seller_name=prop_data.get('seller_name') or (prop_data.get('seller', {}).get('name') if isinstance(prop_data.get('seller'), dict) else None),
+                                    seller_url=prop_data.get('seller_url') or (prop_data.get('seller', {}).get('url') if isinstance(prop_data.get('seller'), dict) else None),
+                                    # Images
+                                    image_url=prop_data.get('image_url') or (prop_data.get('images', [None])[0] if isinstance(prop_data.get('images'), list) and prop_data.get('images') else None),
+                                    images=prop_data.get('images') if isinstance(prop_data.get('images'), list) else ([prop_data.get('image_url')] if prop_data.get('image_url') else None),
+                                    # Additional details
+                                    property_type=prop_data.get('property_type'),
+                                    price_type=prop_data.get('price_type'),
+                                    original_price=prop_data.get('original_price')
                                 )
                                 properties.append(listing)
                                 ctx.logger.info(f"✅ Added rental property (score: {score:.1f}): {prop_data.get('location', 'Unknown')} - {prop_data.get('price', 'N/A')}€")
@@ -743,7 +892,20 @@ def create_research_agent(port: int = 8002):
                                 description=prop_data.get("description"),
                                 url=prop_data.get("url"),
                                 latitude=None,
-                                longitude=None
+                                longitude=None,
+                                negotiation_score=calculate_negotiation_score(prop_data, req),
+                                # Contact information
+                                contact_phone=prop_data.get('seller_phone') or (prop_data.get('seller', {}).get('phone') if isinstance(prop_data.get('seller'), dict) else None),
+                                contact_email=prop_data.get('seller_email') or (prop_data.get('seller', {}).get('email') if isinstance(prop_data.get('seller'), dict) else None),
+                                seller_name=prop_data.get('seller_name') or (prop_data.get('seller', {}).get('name') if isinstance(prop_data.get('seller'), dict) else None),
+                                seller_url=prop_data.get('seller_url') or (prop_data.get('seller', {}).get('url') if isinstance(prop_data.get('seller'), dict) else None),
+                                # Images
+                                image_url=prop_data.get('image_url') or (prop_data.get('images', [None])[0] if isinstance(prop_data.get('images'), list) and prop_data.get('images') else None),
+                                images=prop_data.get('images') if isinstance(prop_data.get('images'), list) else ([prop_data.get('image_url')] if prop_data.get('image_url') else None),
+                                # Additional details
+                                property_type=prop_data.get('property_type'),
+                                price_type=prop_data.get('price_type'),
+                                original_price=prop_data.get('original_price')
                             )
                             properties.append(listing)
                         except Exception as e:
@@ -817,6 +979,15 @@ def create_research_agent(port: int = 8002):
                             city = parts[-1].strip()
                     
                     # Create PropertyListing
+                    # Prepare prop_data dict for negotiation score calculation
+                    prop_data_dict = {
+                        'price': price,
+                        'bedrooms': bedrooms if bedrooms else req.bedrooms,
+                        'bathrooms': None,
+                        'sqft': None,
+                        'description': description[:500] if description else None,
+                        'address': address
+                    }
                     listing = PropertyListing(
                         address=address,
                         city=city,
@@ -827,7 +998,20 @@ def create_research_agent(port: int = 8002):
                         description=description[:500] if description else None,
                         url=link,
                         latitude=None,
-                        longitude=None
+                        longitude=None,
+                        negotiation_score=calculate_negotiation_score(prop_data_dict, req),
+                        # Contact information - not available from organic search
+                        contact_phone=None,
+                        contact_email=None,
+                        seller_name=None,
+                        seller_url=None,
+                        # Images - not available from organic search
+                        image_url=None,
+                        images=None,
+                        # Additional details
+                        property_type=None,
+                        price_type=None,
+                        original_price=None
                     )
                     properties.append(listing)
                     ctx.logger.info(f"✅ Created PropertyListing from search result {idx + 1}: {address[:50]}")

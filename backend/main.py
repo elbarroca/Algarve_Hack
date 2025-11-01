@@ -370,7 +370,7 @@ def main():
             if scoping_msg.is_complete and scoping_msg.requirements:
                 ctx.logger.info("Waiting for research results")
 
-                for _ in range(60):
+                for _ in range(960):  # Increased to 480 seconds (960 * 0.5s) to handle long scraping operations
                     if "research" in sessions[req.session_id]:
                         break
                     await asyncio.sleep(0.5)
