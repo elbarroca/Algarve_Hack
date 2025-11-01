@@ -26,9 +26,9 @@ class VapiClient:
             "Content-Type": "application/json"
         }
 
-        # Default IDs (can be overridden)
-        self.assistant_id = os.getenv("VAPI_ASSISTANT_ID", "24bb8602-f087-42bd-99e5-7edd52c3b4ea")
-        self.phone_number_id = os.getenv("VAPI_PHONE_NUMBER_ID", "f21ad394-d134-4386-8ec9-9319500b2695")
+        # Default IDs (can be overridden via environment variables)
+        self.assistant_id = os.getenv("VAPI_ASSISTANT_ID")
+        self.phone_number_id = os.getenv("VAPI_PHONE_NUMBER_ID")
 
     def update_assistant(
         self,
@@ -54,7 +54,7 @@ class VapiClient:
             "firstMessage": first_message,
             "model": {
                 "provider": "openai",
-                "model": "gpt-4o",
+                "model": "gpt-4.1-nano",
                 "messages": [
                     {
                         "role": "system",
