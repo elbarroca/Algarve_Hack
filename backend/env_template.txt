@@ -1,0 +1,52 @@
+# =================================================================
+# ESTATE SEARCH SYSTEM - ENVIRONMENT VARIABLES
+# =================================================================
+#
+# Copy this file to .env and fill in your API keys
+#
+# Required APIs:
+# 1. ASI:1 API - LLM for agents (https://asi1.ai/)
+# 2. BrightData API - Web scraping (https://brightdata.com/)
+# 3. Firecrawl API - Web crawling (https://firecrawl.dev/)
+# 4. Tavily API - Search engine (https://tavily.com/)
+# 5. Vapi API - Voice AI (https://vapi.ai/)
+# 6. Mapbox API - Geocoding and maps (https://mapbox.com/)
+#
+# =================================================================
+
+# ASI:1 API Configuration (REQUIRED - all agents use this for LLM)
+ASI_API_KEY=your_asi_api_key_here
+ASI_API_URL=https://api.asi1.ai/v1/chat/completions
+ASI_MODEL=asi1-mini
+
+# BrightData API Configuration (REQUIRED - for web scraping)
+BRIGHT_DATA_API_KEY=your_brightdata_api_key_here
+
+# Firecrawl API Configuration (REQUIRED - for web crawling)
+FIRECRAWL_API_KEY=your_firecrawl_api_key_here
+
+# Tavily API Configuration (REQUIRED - for search)
+TAVILY_API_KEY=your_tavily_api_key_here
+
+# Vapi API Configuration (REQUIRED - for voice calls)
+VAPI_API_KEY=your_vapi_api_key_here
+VAPI_ASSISTANT_ID=your_vapi_assistant_id_here
+
+# Mapbox API Configuration (REQUIRED - for geocoding and maps)
+MAPBOX_API_KEY=your_mapbox_api_key_here
+
+
+# =================================================================
+# SETUP INSTRUCTIONS:
+# =================================================================
+#
+# 1. Rename this file from env_template.txt to .env
+# 2. Sign up for each API service and get your API keys
+# 3. Replace "your_xxx_api_key_here" with your actual API keys
+# 4. Save the .env file
+# 5. Restart the backend (py -3.12 main.py)
+#
+# The backend will not work without these API keys configured!
+#
+# =================================================================
+

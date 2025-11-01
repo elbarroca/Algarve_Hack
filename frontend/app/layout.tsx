@@ -1,22 +1,20 @@
 import type { Metadata } from "next";
-import { Inter, Space_Grotesk } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
-const primaryFont = Inter({
-  variable: "--primary-font",
+const geistSans = Geist({
+  variable: "--font-geist-sans",
   subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
 });
 
-const accentFont = Space_Grotesk({
-  variable: "--accent-font",
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
-  title: "Algarve Hack - Inovação & Tecnologia",
-  description: "Plataforma de inovação e desenvolvimento tecnológico no Algarve",
+  title: "Homes AI",
+  description: "Intelligent property search powered by Fetch.ai uAgents and ASI:One blockchain technology",
 };
 
 export default function RootLayout({
@@ -25,9 +23,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="pt" suppressHydrationWarning>
+    <html lang="en">
       <body
-        className={`${primaryFont.variable} ${accentFont.variable} antialiased overflow-x-hidden`}
+        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
       </body>

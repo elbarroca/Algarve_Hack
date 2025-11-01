@@ -94,16 +94,45 @@ class SimpleLLMAgent:
             return {"success": False, "content": f"Request Error: {str(e)}"}
 
     def parse_json_response(self, content: str) -> Dict:
-        """Parse JSON response from LLM, handling markdown formatting"""
+        """Parse JSON response from LLM, handling markdown formatting and edge cases"""
         try:
             # Remove markdown code blocks if present
             content = re.sub(
                 r"^```json\s*|```$", "", content.strip(), flags=re.MULTILINE
             )
             content = content.strip()
-            return json.loads(content)
+            
+            # Try to find JSON object if there's extra text
+            # Look for the first { and last } to extract just the JSON
+            if not content.startswith("{"):
+                start_idx = content.find("{")
+                if start_idx != -1:
+                    content = content[start_idx:]
+            
+            if not content.endswith("}"):
+                end_idx = content.rfind("}")
+                if end_idx != -1:
+                    content = content[:end_idx + 1]
+            
+            # Parse the JSON
+            parsed = json.loads(content)
+            return parsed
+            
         except (json.JSONDecodeError, KeyError) as e:
             print(f"❌ {self.name}: JSON parsing error: {e}")
+            print(f"   Content preview: {content[:200]}...")
+            
+            # Try one more time with even more aggressive cleaning
+            try:
+                # Remove any text before first { and after last }
+                start = content.find("{")
+                end = content.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    cleaned = content[start:end+1]
+                    return json.loads(cleaned)
+            except:
+                pass
+                
             return {}
 
     async def query_with_json(self, prompt: str, temperature: float = 0.1) -> Dict:

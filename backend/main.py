@@ -58,7 +58,7 @@ class NegotiateResponse(Model):
 
 def main():
     print("=" * 60)
-    print("🏠 Estate Search System Starting")
+    print("Estate Search System Starting")
     print("=" * 60)
 
     # Create all agents
@@ -693,7 +693,7 @@ Focus on practical, actionable steps the buyer should take next."""
     bureau.add(vapi_agent)
     bureau.add(coordinator)
 
-    print("✅ All agents configured")
+    print("All agents configured")
     print(f"   - REST API: http://localhost:8080/api/chat")
     print(f"   - REST API: http://localhost:8080/api/negotiate")
     print(f"   - Scoping: {scoping_address}")
