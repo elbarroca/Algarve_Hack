@@ -27,13 +27,21 @@ Conversation:
 
 Determine if this is:
 1. A GENERAL QUESTION (asking about neighborhoods, schools, crime, amenities, local info, etc.) → set "is_general_question: true"
-2. A PROPERTY SEARCH REQUEST with all requirements (budget, bedrooms, bathrooms, location) → set "is_complete: true"
+2. A PROPERTY SEARCH REQUEST with budget, bedrooms, and location (bathrooms optional) → set "is_complete: true"
 3. An INCOMPLETE property search or follow-up → set "is_complete: false" and "is_general_question: false"
+
+IMPORTANT: Recognize international formats:
+- "T2" or "2 quartos" = 2 bedrooms
+- "até 300k" or "under 300k" = max budget
+- "apartamento" = apartment
+- Any city name worldwide (Lisboa, London, Paris, Tokyo, etc.)
 
 Examples:
 - "What's the crime rate in Castro District?" → general question
 - "Tell me about schools in San Francisco" → general question
 - "Find me a 2 bed 2 bath home in SF under 1.5M" → complete property search
+- "Procuro apartamento T2 em Lisboa até 300k" → complete property search (2 beds, 300k budget, Lisboa location)
+- "Procuro apartamento de 2 quartos em Lisboa até 300k" → complete property search (2 beds, 300k budget, Lisboa location)
 - "I'm looking for a home" → incomplete (need more info)
 
 Respond with a JSON object as specified in your instructions."""
@@ -76,23 +84,28 @@ def create_scoping_agent(port: int = 8001):
     # LLM client for conversation
     llm_client = SimpleLLMAgent(
         "scoping_agent",
-        system_prompt="""You are a friendly real estate agent helping users find their dream home.
+        system_prompt="""You are a friendly real estate agent helping users find their dream home worldwide.
 
 Your job is to gather the following information from the user through natural conversation:
-1. Budget (minimum and maximum price range)
+1. Budget (minimum and maximum price range) - in any currency (€, $, £, etc.)
 2. Number of bedrooms
-3. Number of bathrooms
+3. Number of bathrooms (optional - can default to 1 if not mentioned)
 4. Specific location within their desired area
+
+IMPORTANT: Accept queries in ANY language (English, Portuguese, Spanish, etc.)
 
 CRITICAL RULES:
 - Be conversational and friendly
-- Ask follow-up questions ONLY if you still need information
-- Once you have ALL required information (budget, bedrooms, bathrooms, and location), mark as complete
+- Accept international property terminology: "T2" = 2 bedrooms, "apartamento" = apartment, "até" = up to
+- If budget and location are specified, assume 1 bathroom if not mentioned
+- Once you have budget, bedrooms, and location, mark as complete (bathrooms optional)
 - When marking as complete, ONLY provide a confirmation statement. NEVER ask any questions.
 - If the user asks a follow-up question (like "do you have links?"), respond conversationally but mark as NOT complete
 - Only mark as complete when starting a NEW property search
 
-RESPONSE FORMATS:
+RESPONSE FORMAT - CRITICAL:
+You MUST respond with ONLY a valid JSON object. No markdown, no code blocks, no extra text.
+Do NOT wrap your response in ```json or ```. Just return the raw JSON object.
 
 1. If the user is asking a GENERAL QUESTION (about neighborhoods, schools, crime, amenities, etc.), respond with:
 {
@@ -102,7 +115,7 @@ RESPONSE FORMATS:
   "general_question": "<the user's question>"
 }
 
-2. If you have gathered ALL property search requirements (budget, bedrooms, bathrooms, location), respond with:
+2. If you have gathered essential property search requirements (budget, bedrooms, location), respond with:
 {
   "agent_message": "<simple confirmation without any questions>",
   "is_complete": true,
@@ -111,18 +124,22 @@ RESPONSE FORMATS:
     "budget_min": <number or null>,
     "budget_max": <number>,
     "bedrooms": <number>,
-    "bathrooms": <number>,
-    "location": "<city/area in Bay Area>",
+    "bathrooms": <number or 1 if not specified>,
+    "location": "<any city or area worldwide>",
     "additional_info": "<optional additional preferences or null>"
   }
 }
+
+Note: If bathrooms are not mentioned, default to 1. Budget can be in any currency (convert to base number, e.g., "300k" = 300000).
 
 3. If you need more information for a property search, respond with:
 {
   "agent_message": "<your question or response>",
   "is_complete": false,
   "is_general_question": false
-}"""
+}
+
+REMEMBER: Return ONLY the JSON object, nothing else!"""
     )
 
     # Store conversation history per session
@@ -186,11 +203,37 @@ RESPONSE FORMATS:
                     community_name=community_name
                 )
             else:
+                ctx.logger.error(f"Failed to parse LLM response for session {msg.session_id}")
                 response = _create_default_response(msg.session_id)
 
             await ctx.send(sender, response)
         else:
-            response = _create_default_response(msg.session_id)
+            # LLM query failed - provide helpful error message
+            error_message = result["content"]
+            ctx.logger.error(f"❌ LLM query failed for session {msg.session_id}: {error_message}")
+            
+            # Check if it's an API key issue
+            if "ASI_API_KEY" in error_message or "not configured" in error_message:
+                response = ScopingResponse(
+                    agent_message="⚠️ CONFIGURATION ERROR: The system is not properly configured. Please check that the ASI_API_KEY is set in the backend/.env file. See SETUP_REQUIRED.md for instructions.",
+                    is_complete=False,
+                    session_id=msg.session_id,
+                    requirements=None,
+                    is_general_question=False,
+                    general_question=None,
+                    community_name=None
+                )
+            else:
+                response = ScopingResponse(
+                    agent_message=f"⚠️ Sorry, I encountered an error processing your request: {error_message}. Please try again or contact support.",
+                    is_complete=False,
+                    session_id=msg.session_id,
+                    requirements=None,
+                    is_general_question=False,
+                    general_question=None,
+                    community_name=None
+                )
+            
             await ctx.send(sender, response)
 
     return agent

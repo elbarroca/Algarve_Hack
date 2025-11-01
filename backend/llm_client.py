@@ -102,6 +102,18 @@ class SimpleLLMAgent:
             )
             content = content.strip()
             
+            # Try to find JSON object if there's extra text
+            # Look for the first { and last } to extract just the JSON
+            if not content.startswith("{"):
+                start_idx = content.find("{")
+                if start_idx != -1:
+                    content = content[start_idx:]
+            
+            if not content.endswith("}"):
+                end_idx = content.rfind("}")
+                if end_idx != -1:
+                    content = content[:end_idx + 1]
+            
             # Try to parse as-is first
             return json.loads(content)
             
@@ -114,9 +126,7 @@ class SimpleLLMAgent:
                 fixed_content = content
                 
                 # Fix unterminated strings - find the last complete JSON object
-                # This is a simple heuristic for handling malformed responses
                 brace_count = 0
-                quote_count = 0
                 in_string = False
                 escape_next = False
                 last_complete_pos = 0
@@ -132,7 +142,6 @@ class SimpleLLMAgent:
                         
                     if char == '"' and not escape_next:
                         in_string = not in_string
-                        quote_count += 1
                         continue
                         
                     if not in_string:
@@ -149,7 +158,7 @@ class SimpleLLMAgent:
                     print(f"🔧 Trying to parse complete JSON up to position {last_complete_pos}")
                     return json.loads(complete_json)
                 
-                # Try removing trailing incomplete content
+                # Try removing trailing incomplete content line by line
                 lines = fixed_content.split('\n')
                 for i in range(len(lines), 0, -1):
                     try:
@@ -158,22 +167,11 @@ class SimpleLLMAgent:
                     except:
                         continue
                 
-                # If all else fails, try to extract any JSON-like structure
-                json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-                matches = re.findall(json_pattern, fixed_content)
-                if matches:
-                    for match in matches:
-                        try:
-                            return json.loads(match)
-                        except:
-                            continue
-                
                 print(f"💥 Could not fix malformed JSON. Content preview: {content[:200]}...")
                 return {}
                 
             except Exception as fix_error:
                 print(f"💥 Failed to fix JSON: {fix_error}")
-                print(f"🔍 Original error: {e}")
                 return {}
 
     async def query_with_json(self, prompt: str, temperature: float = 0.1) -> Dict:

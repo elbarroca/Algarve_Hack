@@ -1,0 +1,71 @@
+============================================================
+Estate Search System Starting
+============================================================
+WARNING:  [bureau]: Overwriting the agent's endpoints [AgentEndpoint(url='http://localhost:8001/submit', weight=1)] with the Bureau's endpoints [AgentEndpoint(url='http://localhost:8080/submit', weight=1)].
+WARNING:  [bureau]: Overwriting the agent's endpoints [AgentEndpoint(url='http://localhost:8002/submit', weight=1)] with the Bureau's endpoints [AgentEndpoint(url='http://localhost:8080/submit', weight=1)].
+WARNING:  [bureau]: Overwriting the agent's endpoints [AgentEndpoint(url='http://localhost:8003/submit', weight=1)] with the Bureau's endpoints [AgentEndpoint(url='http://localhost:8080/submit', weight=1)].
+WARNING:  [bureau]: Overwriting the agent's endpoints [AgentEndpoint(url='http://localhost:8004/submit', weight=1)] with the Bureau's endpoints [AgentEndpoint(url='http://localhost:8080/submit', weight=1)].
+WARNING:  [bureau]: Overwriting the agent's endpoints [AgentEndpoint(url='http://localhost:8005/submit', weight=1)] with the Bureau's endpoints [AgentEndpoint(url='http://localhost:8080/submit', weight=1)].
+WARNING:  [bureau]: Overwriting the agent's endpoints [AgentEndpoint(url='http://localhost:8006/submit', weight=1)] with the Bureau's endpoints [AgentEndpoint(url='http://localhost:8080/submit', weight=1)].
+WARNING:  [bureau]: Overwriting the agent's endpoints [AgentEndpoint(url='http://localhost:8007/submit', weight=1)] with the Bureau's endpoints [AgentEndpoint(url='http://localhost:8080/submit', weight=1)].
+WARNING:  [bureau]: Overwriting the agent's endpoints [AgentEndpoint(url='http://localhost:8008/submit', weight=1)] with the Bureau's endpoints [AgentEndpoint(url='http://localhost:8080/submit', weight=1)].
+WARNING:  [bureau]: Overwriting the agent's endpoints [AgentEndpoint(url='http://localhost:8080/submit', weight=1)] with the Bureau's endpoints [AgentEndpoint(url='http://localhost:8080/submit', weight=1)].
+All agents configured
+   - REST API: http://localhost:8080/api/chat
+   - REST API: http://localhost:8080/api/negotiate
+   - Scoping: agent1q28ymdp65p9f483nzxl564zc5t3n2he89y98rcp5wlq6wj949zxyjvj3dey
+   - Research: agent1qvw2cf8knh2ydlqs7klu4k4jqccqd0xfdyyn7uk47q7l4qx64tl3czyemej
+   - General: agent1q2v6xyka2a0h9h2r2pwyreu2yjcrcjtwfc8cdynlqnzg3vsc8ca3vmw233k
+   - Mapbox: agent1qfxranj2sdknjpgrj3f0mwvgfl5ftkuee8ha6eul97tehzmcj2nvxcu9qaq
+   - Local Discovery: agent1q0u6dn5zv6fpvw20285hrv3cxpsaa6hxnepyyxsumtnt7tyst8enjuyr74t
+   - Community Analysis: agent1qfdrjg2e6zkzscmnltjpa3rqmqtlyw3yc507xdyr9umn52u77st8vym2h8m
+   - Prober: agent1q2r2cv8kt6lzhtst9620f5rp5j70vje7mux608au3lqaskpm0d56kteacen
+   - Vapi: agent1q27gl858trkx44vanalhfmde9g0d705d44xxffe9ktz92tvrmwac29qf5vq
+============================================================
+INFO:     [scoping_agent]: Starting agent with address: agent1q28ymdp65p9f483nzxl564zc5t3n2he89y98rcp5wlq6wj949zxyjvj3dey
+INFO:     [research_agent]: Starting agent with address: agent1qvw2cf8knh2ydlqs7klu4k4jqccqd0xfdyyn7uk47q7l4qx64tl3czyemej
+INFO:     [general_agent]: Starting agent with address: agent1q2v6xyka2a0h9h2r2pwyreu2yjcrcjtwfc8cdynlqnzg3vsc8ca3vmw233k
+INFO:     [mapbox_agent]: Starting agent with address: agent1qfxranj2sdknjpgrj3f0mwvgfl5ftkuee8ha6eul97tehzmcj2nvxcu9qaq
+INFO:     [local_discovery_agent]: Starting agent with address: agent1q0u6dn5zv6fpvw20285hrv3cxpsaa6hxnepyyxsumtnt7tyst8enjuyr74t
+INFO:     [community_analysis_agent]: Starting agent with address: agent1qfdrjg2e6zkzscmnltjpa3rqmqtlyw3yc507xdyr9umn52u77st8vym2h8m
+INFO:     [prober_agent]: Starting agent with address: agent1q2r2cv8kt6lzhtst9620f5rp5j70vje7mux608au3lqaskpm0d56kteacen
+INFO:     [vapi_agent]: Starting agent with address: agent1q27gl858trkx44vanalhfmde9g0d705d44xxffe9ktz92tvrmwac29qf5vq
+INFO:     [coordinator]: Starting agent with address: agent1qw8qwl845dslcwyjq0tpl6a4g2qh66uvqqu2rchptmwcx8vtk7wszwgpu09
+INFO:     [scoping_agent]: Almanac contract registration is up to date!
+INFO:     [scoping_agent]: Scoping Agent started at agent1q28ymdp65p9f483nzxl564zc5t3n2he89y98rcp5wlq6wj949zxyjvj3dey
+INFO:     [research_agent]: Almanac contract registration is up to date!
+INFO:     [research_agent]: Research Agent started at agent1qvw2cf8knh2ydlqs7klu4k4jqccqd0xfdyyn7uk47q7l4qx64tl3czyemej
+INFO:     [general_agent]: Almanac contract registration is up to date!
+INFO:     [general_agent]: General Agent started at agent1q2v6xyka2a0h9h2r2pwyreu2yjcrcjtwfc8cdynlqnzg3vsc8ca3vmw233k
+INFO:     [mapbox_agent]: Almanac contract registration is up to date!
+INFO:     [mapbox_agent]: Mapbox Agent started at agent1qfxranj2sdknjpgrj3f0mwvgfl5ftkuee8ha6eul97tehzmcj2nvxcu9qaq
+INFO:     [local_discovery_agent]: Almanac contract registration is up to date!
+INFO:     [local_discovery_agent]: Local Discovery Agent started at agent1q0u6dn5zv6fpvw20285hrv3cxpsaa6hxnepyyxsumtnt7tyst8enjuyr74t
+INFO:     [community_analysis_agent]: Almanac contract registration is up to date!
+INFO:     [community_analysis_agent]: Community Analysis Agent started at agent1qfdrjg2e6zkzscmnltjpa3rqmqtlyw3yc507xdyr9umn52u77st8vym2h8m
+INFO:     [prober_agent]: Almanac contract registration is up to date!
+INFO:     [prober_agent]: Prober Agent started at agent1q2r2cv8kt6lzhtst9620f5rp5j70vje7mux608au3lqaskpm0d56kteacen
+INFO:     [vapi_agent]: Almanac contract registration is up to date!
+INFO:     [vapi_agent]: Vapi Agent started at agent1q27gl858trkx44vanalhfmde9g0d705d44xxffe9ktz92tvrmwac29qf5vq
+INFO:     [coordinator]: Almanac contract registration is up to date!
+INFO:     [coordinator]: ============================================================
+INFO:     [coordinator]: Coordinator started
+INFO:     [coordinator]: Scoping Agent: agent1q28ymdp65p9f483nzxl564zc5t3n2he89y98rcp5wlq6wj949zxyjvj3dey
+INFO:     [coordinator]: Research Agent: agent1qvw2cf8knh2ydlqs7klu4k4jqccqd0xfdyyn7uk47q7l4qx64tl3czyemej
+INFO:     [coordinator]: Local Discovery Agent: agent1q0u6dn5zv6fpvw20285hrv3cxpsaa6hxnepyyxsumtnt7tyst8enjuyr74t
+INFO:     [coordinator]: Community Analysis Agent: agent1qfdrjg2e6zkzscmnltjpa3rqmqtlyw3yc507xdyr9umn52u77st8vym2h8m
+INFO:     [coordinator]: ============================================================
+INFO:     [bureau]: Starting server on http://0.0.0.0:8080 (Press CTRL+C to quit)
+INFO:     [bureau]: Batch registration on Almanac API successful
+INFO:     [coordinator]: REST request from session test_portuguese_614376272: Procuro apartamento de 2 quartos em Lisboa até 300k
+INFO:     [coordinator]: Routing message to scoping agent
+INFO:     [coordinator]: Received scoping response for session test_portuguese_614376272
+INFO:     [coordinator]: DEBUG - is_general_question: False
+INFO:     [coordinator]: DEBUG - general_question: None
+INFO:     [coordinator]: DEBUG - is_complete: False
+INFO:     [coordinator]: REST request from session test_english_1986029831: Find me a 2 bedroom apartment in Lisbon under 300000 euros
+INFO:     [coordinator]: Routing message to scoping agent
+INFO:     [coordinator]: Received scoping response for session test_english_1986029831
+INFO:     [coordinator]: DEBUG - is_general_question: False
+INFO:     [coordinator]: DEBUG - general_question: None
+INFO:     [coordinator]: DEBUG - is_complete: False
