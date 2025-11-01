@@ -13,6 +13,7 @@ from uagents import Agent, Context
 from models import Model
 from typing import Optional, Dict, Any, List
 from clients.vapi import VapiClient
+from agents.vapi_prompts import build_student_housing_prompt, build_first_message
 import os
 import json
 
@@ -35,6 +36,11 @@ class VapiResponse(Model):
     message: str
     session_id: str
     call_summary: Optional[str] = None
+    # Structured outcomes from call
+    availability_date: Optional[str] = None
+    price_flexibility: Optional[str] = None
+    tenant_requirements: Optional[str] = None
+    next_steps: Optional[list] = None
 
 
 def _format_findings_text(findings: list) -> str:
@@ -54,14 +60,15 @@ def _format_findings_text(findings: list) -> str:
     return findings_text
 
 
-def _calculate_price_reduction(leverage_score: int) -> tuple[str, str]:
+def _calculate_price_reduction(leverage_score: float) -> tuple[str, str]:
     """Calculate suggested price reduction based on leverage score."""
-    assert isinstance(leverage_score, int), "Leverage score must be an integer"
-    assert 0 <= leverage_score <= 10, "Leverage score must be between 0 and 10"
+    # Convert to int if it's a float
+    leverage_score_int = int(round(leverage_score))
+    assert 0 <= leverage_score_int <= 10, "Leverage score must be between 0 and 10"
     
-    if leverage_score >= 7:
+    if leverage_score_int >= 7:
         return "5-10%", "high leverage position"
-    elif leverage_score >= 5:
+    elif leverage_score_int >= 5:
         return "3-5%", "moderate leverage position"
     else:
         return "1-3%", "limited leverage position"
@@ -87,7 +94,7 @@ def _build_negotiation_strategy(vapi_context: Dict[str, Any]) -> Dict[str, str]:
 
 
 def build_system_prompt(vapi_context: Dict[str, Any]) -> str:
-    """Build the system prompt for Vapi assistant with intelligence data."""
+    """Build the optimized system prompt for Vapi assistant."""
     assert isinstance(vapi_context, dict), "Context must be a dictionary"
     assert 'property' in vapi_context, "Context must contain property data"
     assert 'user' in vapi_context, "Context must contain user data"
@@ -97,88 +104,20 @@ def build_system_prompt(vapi_context: Dict[str, Any]) -> str:
     user_name = vapi_context['user']['name']
     user_prefs = vapi_context['user']['preferences']
     leverage_score = vapi_context['intelligence']['leverage_score']
-    assessment = vapi_context['intelligence']['overall_assessment']
     findings = vapi_context['intelligence']['findings']
-
-    # Build strategy
-    strategy = _build_negotiation_strategy(vapi_context)
-    findings_text = _format_findings_text(findings)
-
-    return f"""You are an AI negotiation agent representing the buyer {user_name} for the property at {property_addr}.
-
-You are on a PHONE CALL with the listing agent to negotiate a better price. Your goal is to use the intelligence data below to get the LOWEST possible price for your client.
-
-====================
-BUYER INFORMATION
-====================
-Name: {user_name}
-Preferences: {user_prefs}
-
-====================
-PROPERTY INTELLIGENCE
-====================
-Overall Leverage Score: {leverage_score}/10 (higher = more buyer leverage)
-
-Overall Assessment:
-{assessment}
-
-Key Findings (USE THESE AS LEVERAGE):
-{findings_text}
-
-====================
-NEGOTIATION STRATEGY
-====================
-
-1. OPENING:
-   - Identify yourself as representing {user_name}
-   - Express serious interest in the property
-   - Mention you've done thorough market research
-
-2. PRESENT CONCERNS (use the findings above):
-   - Reference specific data points from findings
-   - Focus on HIGH leverage score items first (8+ scores)
-   - Be specific with numbers (days on market, price reductions, etc.)
-   - Frame as "market analysis" not criticism
-
-3. REQUEST PRICE REDUCTION:
-   - Based on the leverage score and findings, suggest a price adjustment
-   - You are in a {strategy['leverage_desc']} - request {strategy['reduction_range']} reduction
-   - Justify with specific findings
-
-4. HANDLE OBJECTIONS:
-   - If they dispute findings, ask for their counter-data
-   - Emphasize your client's serious interest and ability to close
-   - Reference buyer's preferences: {user_prefs}
-   - Stay professional but persistent
-
-5. CLOSING:
-   - Try to get verbal agreement on adjusted price
-   - Offer to submit formal offer immediately
-   - Get next steps (inspection, paperwork, etc.)
-
-====================
-RULES (MUST FOLLOW)
-====================
-- Keep responses BRIEF (under 75 words per turn)
-- Be conversational and natural (you're on a phone call)
-- Use ONLY the intelligence data provided - do NOT fabricate facts
-- Stay professional and respectful
-- Focus on DATA and MARKET CONDITIONS, not personal attacks
-- Follow Fair Housing laws - no discriminatory language
-- Do NOT use emojis or special formatting
-
-====================
-EXAMPLE OPENING
-====================
-"Hi, this is calling on behalf of {user_name} regarding the property at {property_addr}. We're very interested, but our market analysis has identified some concerns we'd like to discuss. Do you have a moment to talk about the pricing?"
-
-====================
-KEY TALKING POINTS
-====================
-Based on your intelligence, emphasize:
-{strategy['key_talking_points']}
-
-Remember: Your job is to get the LOWEST price possible while being professional. Use the intelligence data strategically!""".strip()
+    
+    # Extract location from address or use default
+    location = property_addr.split(',')[-1].strip() if ',' in property_addr else property_addr
+    
+    # Use optimized prompt from vapi_prompts module
+    return build_student_housing_prompt(
+        student_name=user_name,
+        location=location,
+        property_address=property_addr,
+        leverage_score=leverage_score,
+        findings=findings,
+        user_preferences=user_prefs
+    )
 
 
 def _validate_vapi_context(context: Dict[str, Any]) -> None:
@@ -197,6 +136,78 @@ def _validate_vapi_context(context: Dict[str, Any]) -> None:
     assert 'findings' in context['intelligence'], "Intelligence must have findings"
 
 
+async def parse_call_outcomes(call_summary: str, llm_client) -> dict:
+    """
+    Parse VAPI call summary to extract structured outcomes.
+
+    Args:
+        call_summary: The call summary/transcript from VAPI
+        llm_client: LLM client for parsing
+
+    Returns:
+        Dictionary with structured outcomes:
+        - availability_date: When property is available
+        - price_flexibility: Any price negotiation mentioned
+        - tenant_requirements: Landlord's tenant preferences
+        - next_steps: What to do next
+    """
+    if not call_summary or call_summary == "":
+        return {
+            "availability_date": None,
+            "price_flexibility": None,
+            "tenant_requirements": None,
+            "next_steps": []
+        }
+
+    prompt = f"""Analyze this property negotiation call summary and extract specific information:
+
+Call Summary:
+{call_summary}
+
+Extract the following information and return as JSON:
+1. **availability_date**: When is the property available? (extract date/timeframe if mentioned)
+2. **price_flexibility**: Is there flexibility on price? What was discussed about pricing?
+3. **tenant_requirements**: What qualities/requirements does the landlord want in a tenant?
+4. **next_steps**: List of 2-3 specific next steps mentioned or implied
+
+Return ONLY valid JSON in this format:
+{{
+  "availability_date": "string or null",
+  "price_flexibility": "string or null",
+  "tenant_requirements": "string or null",
+  "next_steps": ["step 1", "step 2"]
+}}
+
+If information is not mentioned in the summary, use null for that field."""
+
+    try:
+        from llm_client import SimpleLLMAgent
+        parser = SimpleLLMAgent(
+            name="OutcomeParser",
+            system_prompt="You are an expert at extracting structured information from conversation summaries."
+        )
+        result = await parser.query_with_json(prompt, temperature=0.1)
+
+        if result.get("success"):
+            return result.get("data", {})
+        else:
+            print(f"⚠️ Failed to parse outcomes: {result.get('error')}")
+            return {
+                "availability_date": None,
+                "price_flexibility": None,
+                "tenant_requirements": None,
+                "next_steps": []
+            }
+    except Exception as e:
+        print(f"❌ Error parsing call outcomes: {e}")
+        return {
+            "availability_date": None,
+            "price_flexibility": None,
+            "tenant_requirements": None,
+            "next_steps": []
+        }
+
+
 def create_vapi_agent(port: int = 8008):
     """Create and configure the Vapi agent for property negotiation calls."""
     agent = Agent(
@@ -207,7 +218,7 @@ def create_vapi_agent(port: int = 8008):
     )
 
     # Initialize Vapi client
-    my_phone_number = os.getenv("VAPI_MY_PHONE_NUMBER", os.getenv("VAPI_TARGET_PHONE"))
+    my_phone_number = os.getenv("VAPI_MY_PHONE_NUMBER", os.getenv("VAPI_TARGET_PHONE", "+15551234567"))
 
     try:
         vapi_client = VapiClient()
@@ -225,8 +236,10 @@ def create_vapi_agent(port: int = 8008):
         ctx.logger.info(f"   Leverage Score: {msg.intelligence.get('leverage_score', 0)}/10")
         ctx.logger.info(f"   Findings: {len(msg.intelligence.get('findings', []))} leverage points")
         ctx.logger.info(f"   📋 Using property intelligence data from prober agent")
+        ctx.logger.info(f"   🔍 Vapi client available: {vapi_client is not None}")
 
         if not vapi_client:
+            ctx.logger.error("❌ Vapi client not initialized!")
             await ctx.send(sender, VapiResponse(
                 call_id=None,
                 status="error",
@@ -236,9 +249,12 @@ def create_vapi_agent(port: int = 8008):
             return
 
         try:
+            # Get property address early for use throughout the function
+            property_address = msg.property_address
+            
             # Validate and build context
             vapi_context = {
-                "property": {"address": msg.property_address},
+                "property": {"address": property_address},
                 "user": {
                     "name": msg.user_name,
                     "email": msg.user_email,
@@ -249,63 +265,181 @@ def create_vapi_agent(port: int = 8008):
             
             _validate_vapi_context(vapi_context)
             
-            # Build system prompt and first message using found house data
-            # The intelligence dict contains all property findings from the prober agent
+            # Build system prompt and first message using optimized prompts
             system_prompt = build_system_prompt(vapi_context)
             
-            # Create first message that references the property intelligence
-            property_address = msg.property_address
-            leverage_score = msg.intelligence.get('leverage_score', 0)
-            findings_count = len(msg.intelligence.get('findings', []))
+            # Extract location for first message
+            location = property_address.split(',')[-1].strip() if ',' in property_address else property_address
             
-            first_message = (
-                f"Hi, I'm calling on behalf of {msg.user_name} regarding the property at {property_address}. "
-                f"We've conducted thorough market research and found {findings_count} key leverage points "
-                f"with an overall leverage score of {leverage_score} out of 10. "
-                f"Do you have a moment to discuss the pricing?"
+            # Use optimized first message
+            first_message = build_first_message(
+                student_name=msg.user_name,
+                location=location,
+                property_address=property_address
             )
 
             # Update Vapi assistant with property intelligence
+            leverage_score = msg.intelligence.get('leverage_score', 0)
+            findings_count = len(msg.intelligence.get('findings', []))
+            
+            # Use VAPI default with most human-like male voice (Harry)
+            # Note: Transcriber only supports English, but assistant can speak in Portuguese
+            voice_id = "Harry"  # Most human-like male voice - clear, energetic, professional
+            
             ctx.logger.info(f"Updating assistant with property intelligence:")
             ctx.logger.info(f"   - Property: {property_address}")
+            ctx.logger.info(f"   - Location: {location}")
+            ctx.logger.info(f"   - User: {msg.user_name}")
             ctx.logger.info(f"   - Leverage Score: {leverage_score}/10")
             ctx.logger.info(f"   - Findings: {findings_count} leverage points")
+            ctx.logger.info(f"   - Voice: {voice_id} (VAPI default - most human-like male)")
             
             success = vapi_client.update_assistant(
                 system_prompt=system_prompt,
-                first_message=first_message
+                first_message=first_message,
+                voice_id=voice_id
             )
+            
 
             if not success:
                 raise Exception("Failed to update Vapi assistant")
 
-            # HACKATHON: Always call YOUR phone number (not listing agent)
-            # This allows you to receive the call and test the negotiation
-            ctx.logger.info(f"📞 Calling YOUR number: {my_phone_number}")
-            ctx.logger.info(f"   (This is for hackathon demo - you'll receive the call)")
+            # 🔧 FIXED: Call the property's listing agent instead of user's number
+            # Extract property contact info from intelligence data
+            # Check both intelligence.property and intelligence.property (nested structure)
+            property_data = msg.intelligence.get("property", {})
+            contact_phone = property_data.get("contact_phone") or property_data.get("seller_phone")
             
-            call_id = vapi_client.create_call(customer_phone=my_phone_number)
+            ctx.logger.info(f"🔍 Checking for contact info:")
+            ctx.logger.info(f"   Intelligence property data: {bool(property_data)}")
+            ctx.logger.info(f"   Property data keys: {list(property_data.keys()) if property_data else 'None'}")
+            ctx.logger.info(f"   Contact phone found: {contact_phone}")
+            
+            if not contact_phone:
+                # Also check vapi_context property (for backward compatibility)
+                vapi_context_property = vapi_context.get("property", {})
+                contact_phone = vapi_context_property.get("contact_phone") or vapi_context_property.get("seller_phone")
+                ctx.logger.info(f"   Checked vapi_context property: {bool(vapi_context_property)}")
+                ctx.logger.info(f"   Contact phone from vapi_context: {contact_phone}")
+            
+            # Ensure fallback to configured number
+            if contact_phone:
+                ctx.logger.info(f"📞 Calling property listing agent: {contact_phone}")
+                ctx.logger.info(f"   Property: {property_address}")
+                ctx.logger.info(f"   User: {msg.user_name}")
+                target_phone = contact_phone
+            else:
+                # Fallback to configured phone number for demo/testing purposes
+                if not my_phone_number:
+                    error_msg = "No contact phone found for property and VAPI_MY_PHONE_NUMBER/VAPI_TARGET_PHONE not configured"
+                    ctx.logger.error(f"❌ {error_msg}")
+                    raise Exception(error_msg)
+                
+                ctx.logger.warning(f"⚠️ No contact phone found for property")
+                ctx.logger.info(f"📞 Using fallback: calling configured number: {my_phone_number}")
+                ctx.logger.info(f"   This is for demo/testing purposes")
+                ctx.logger.info(f"   To call actual listing agents, ensure property data includes contact_phone")
+                target_phone = my_phone_number
+            
+            ctx.logger.info(f"📞 Creating Vapi call to: {target_phone}")
+            ctx.logger.info(f"   Final phone number: {target_phone}")
+            ctx.logger.info(f"   Vapi client initialized: {vapi_client is not None}")
+            
+            # Validate phone number format (should be E.164: +1234567890)
+            if not target_phone.startswith("+"):
+                ctx.logger.warning(f"⚠️ Phone number doesn't start with '+', adding it: {target_phone}")
+                # Try to add + if missing
+                if target_phone.startswith("00"):
+                    target_phone = "+" + target_phone[2:]
+                elif target_phone.startswith("0"):
+                    ctx.logger.warning(f"⚠️ Phone number starts with 0, may need country code")
+                else:
+                    target_phone = "+" + target_phone
+            
+            ctx.logger.info(f"🔨 INVOKING vapi_client.create_call() with phone: {target_phone}")
+            call_id = vapi_client.create_call(customer_phone=target_phone)
+            ctx.logger.info(f"📥 create_call() returned: {call_id}")
 
             if not call_id:
-                raise Exception("Failed to create call")
+                # Check if this is a rate limit issue (daily call limit)
+                error_msg = f"Failed to create Vapi call to {target_phone}"
+                
+                ctx.logger.error(error_msg)
+                
+                # Send error response instead of raising exception
+                await ctx.send(sender, VapiResponse(
+                    call_id=None,
+                    status="error",
+                    message="Could not initiate call. This may be due to daily call limits on VAPI-bought numbers. Consider importing your own Twilio number for unlimited calls.",
+                    session_id=msg.session_id
+                ))
+                return
+
+            ctx.logger.info(f"✅ Call created! Call ID: {call_id}")
+            
+            # Immediately verify call status
+            import time
+            time.sleep(3)  # Wait a moment for call to initialize
+            call_status_data = vapi_client.get_call_status(call_id)
+            if call_status_data:
+                status = call_status_data.get("status", "unknown")
+                ctx.logger.info(f"📞 Initial call status: {status}")
+                
+                if status in ["queued", "ringing", "in-progress"]:
+                    ctx.logger.info(f"✅ Call is connecting! Status: {status}")
+                elif status in ["ended", "failed"]:
+                    error_info = call_status_data.get("error") or call_status_data.get("endReason", "Unknown")
+                    ctx.logger.warning(f"⚠️ Call ended/failed immediately: {status} - {error_info}")
+                    ctx.logger.warning(f"   This may indicate a connection issue")
+                else:
+                    ctx.logger.info(f"📊 Call status: {status}")
+            else:
+                ctx.logger.warning(f"⚠️ Could not retrieve initial call status")
+            
+            ctx.logger.info(f"⏳ Waiting for call completion and analysis (max 120s)...")
 
             # Wait for call completion and get analysis
+            # Use shorter timeout to prevent hanging
             call_summary = vapi_client.wait_for_call_analysis(call_id, timeout_seconds=120)
 
-            # Send success response
+            # Parse outcomes from call summary
+            outcomes = {}
+            if call_summary:
+                ctx.logger.info(f"✅ Call completed! Summary: {call_summary[:100]}...")
+                ctx.logger.info(f"🔍 Parsing call outcomes...")
+                try:
+                    outcomes = await parse_call_outcomes(call_summary, None)
+                    ctx.logger.info(f"✅ Outcomes parsed: {outcomes}")
+                except Exception as e:
+                    ctx.logger.error(f"❌ Failed to parse outcomes: {e}")
+                    outcomes = {}
+            else:
+                ctx.logger.info(f"⏳ Call still in progress or analysis not ready yet")
+                ctx.logger.info(f"   Call ID: {call_id} - you can check status later")
+
+            # Send success response (even if call is still in progress)
             await ctx.send(sender, VapiResponse(
                 call_id=call_id,
                 status="success",
-                message="Negotiation call completed",
+                message="Negotiation call initiated successfully",
                 session_id=msg.session_id,
-                call_summary=call_summary or "Call completed. Analysis not yet available."
+                call_summary=call_summary or f"Call {call_id} initiated. Analysis pending.",
+                availability_date=outcomes.get("availability_date"),
+                price_flexibility=outcomes.get("price_flexibility"),
+                tenant_requirements=outcomes.get("tenant_requirements"),
+                next_steps=outcomes.get("next_steps", [])
             ))
 
         except Exception as e:
+            error_details = str(e)
+            ctx.logger.error(f"❌ Error in Vapi call: {error_details}")
+            import traceback
+            ctx.logger.error(traceback.format_exc())
+            
             await ctx.send(sender, VapiResponse(
                 call_id=None,
                 status="error",
-                message=f"Failed to initiate call: {str(e)}",
+                message=f"Failed to initiate call: {error_details}",
                 session_id=msg.session_id
             ))
 

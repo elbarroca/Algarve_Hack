@@ -18,6 +18,7 @@ from models import ProberRequest, ProberResponse, ProberFinding
 from clients.tavily import TavilyClient
 from clients.brigthdata import BrightDataClient
 from llm_client import SimpleLLMAgent
+import asyncio
 
 
 class ProberLLMAgent(SimpleLLMAgent):
@@ -141,13 +142,31 @@ def create_prober_agent(port: int = 8006):
     async def handle_probe_request(ctx: Context, sender: str, msg: ProberRequest):
         ctx.logger.info(f"Probing property: {msg.address}")
 
+        # No longer accepting test addresses - warn but continue
+        is_test_address = any(word in msg.address.lower() for word in ["test", "123 test", "sample", "example", "fake"])
+        if is_test_address:
+            ctx.logger.error(f"❌ Test address detected: {msg.address}")
+            ctx.logger.error(f"   Prober agent requires REAL property addresses")
+            ctx.logger.error(f"   Use skip_research=True in negotiate request to bypass prober")
+            # Return empty results for test addresses
+            await ctx.send(sender, ProberResponse(
+                address=msg.address,
+                findings=[],
+                overall_assessment="Test address provided. No research performed. Use skip_research=True to call directly.",
+                leverage_score=0.0,
+                session_id=msg.session_id
+            ))
+            return
+
         # Step 1: Use Tavily to find relevant sources about this property
-        # Reduced to single query with only 2-3 results to avoid timeout
-        ctx.logger.info(f"Tavily search: {msg.address} property history")
+        # Use more specific search query focusing on property listings and real estate
+        search_query = f'"{msg.address}" property listing realtor agent contact OR "{msg.address}" real estate for sale rent'
+        ctx.logger.info(f"Tavily search: {search_query}")
         tavily_result = await tavily.search(
-            query=f"{msg.address} property history price",
-            search_depth="basic",  # Changed from "advanced" to "basic" for speed
-            max_results=2  # Reduced from 3 to 2
+            query=search_query,
+            search_depth="advanced",
+            max_results=3,
+            include_domains=["zillow.com", "realtor.com", "redfin.com", "trulia.com", "rightmove.com", "idealista.pt"]
         )
 
         all_urls = []
@@ -213,7 +232,20 @@ def create_prober_agent(port: int = 8006):
 
         # Step 3: Use LLM to analyze and extract negotiation leverage
         ctx.logger.info("Analyzing content with LLM...")
-        analysis = await llm_agent.analyze_property_intel(msg.address, scraped_content)
+        try:
+            # Add timeout to LLM analysis (60 seconds)
+            analysis = await asyncio.wait_for(
+                llm_agent.analyze_property_intel(msg.address, scraped_content),
+                timeout=60.0
+            )
+        except asyncio.TimeoutError:
+            ctx.logger.error("❌ LLM analysis timed out - no fallback data will be provided")
+            # No fallback - return empty results
+            analysis = {
+                "findings": [],
+                "overall_assessment": f"LLM analysis timed out for {msg.address}. No property intelligence available.",
+                "leverage_score": 0.0
+            }
 
         # Convert findings to ProberFinding models
         findings = []
@@ -230,7 +262,16 @@ def create_prober_agent(port: int = 8006):
                 ctx.logger.warning(f"Failed to create ProberFinding: {e}")
                 continue
 
+        # If no findings were extracted, log warning but don't generate fake data
+        if len(findings) == 0:
+            ctx.logger.warning(f"⚠️ No findings extracted from analysis")
+            ctx.logger.warning(f"   No relevant property information found online for {msg.address}")
+            ctx.logger.warning(f"   Consider using skip_research=True to bypass prober agent")
+            # Keep empty findings list - no fake data
+
         ctx.logger.info(f"Extracted {len(findings)} findings with overall leverage score: {analysis.get('leverage_score', 0.0)}")
+        ctx.logger.info(f"Step 3: LLM analysis complete")
+        ctx.logger.info(f"Step 4: Sending response back to coordinator...")
 
         # Send response
         await ctx.send(sender, ProberResponse(
@@ -240,5 +281,7 @@ def create_prober_agent(port: int = 8006):
             leverage_score=float(analysis.get("leverage_score", 0.0)),
             session_id=msg.session_id
         ))
+        
+        ctx.logger.info(f"✅ Step 4: Response sent successfully to {sender[:20]}...")
 
     return agent
