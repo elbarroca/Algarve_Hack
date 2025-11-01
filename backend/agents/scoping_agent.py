@@ -150,7 +150,7 @@ RESPONSE FORMATS:
         prompt = _build_requirements_prompt(conversation_text)
 
         # Query LLM
-        result = await llm_client.query_llm(prompt, temperature=0.3)
+        result = await llm_client.query_llm(prompt, temperature=0.1, max_tokens=300)
 
         if result["success"]:
             parsed = llm_client.parse_json_response(result["content"])

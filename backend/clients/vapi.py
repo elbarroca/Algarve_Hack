@@ -29,6 +29,12 @@ class VapiClient:
         # Default IDs (can be overridden via environment variables)
         self.assistant_id = os.getenv("VAPI_ASSISTANT_ID")
         self.phone_number_id = os.getenv("VAPI_PHONE_NUMBER_ID")
+        
+        if not self.assistant_id:
+            raise Exception("VAPI_ASSISTANT_ID not found in environment variables")
+        
+        if not self.phone_number_id:
+            raise Exception("VAPI_PHONE_NUMBER_ID not found in environment variables")
 
     def update_assistant(
         self,

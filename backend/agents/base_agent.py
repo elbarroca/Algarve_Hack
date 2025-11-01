@@ -70,7 +70,7 @@ async def _generate_response(llm_client: SimpleLLMAgent, prompt: str, session_id
     assert isinstance(prompt, str), "Prompt must be a string"
     assert isinstance(session_id, str), "Session ID must be a string"
     
-    result = await llm_client.query_llm(prompt, temperature=0.3, max_tokens=800)
+    result = await llm_client.query_llm(prompt, temperature=0.1, max_tokens=300)
     
     if result["success"]:
         parsed = llm_client.parse_json_response(result["content"])

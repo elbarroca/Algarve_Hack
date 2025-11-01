@@ -109,7 +109,7 @@ Return ONLY valid JSON in this exact format:
 If you cannot find any information, return an empty findings array and low leverage_score.
 """
 
-        result = await self.query_with_json(prompt, temperature=0.3)
+        result = await self.query_with_json(prompt, temperature=0.1)
 
         if result["success"]:
             return result["data"]

@@ -207,9 +207,7 @@ def create_vapi_agent(port: int = 8008):
     )
 
     # Initialize Vapi client
-    # Phone number can be set via environment variable or defaults to a placeholder
-    # For US numbers, use format: +1XXXXXXXXXX
-    target_phone_number = os.getenv("VAPI_TARGET_PHONE", "+16177663908")
+    my_phone_number = os.getenv("VAPI_MY_PHONE_NUMBER", os.getenv("VAPI_TARGET_PHONE"))
 
     try:
         vapi_client = VapiClient()
@@ -225,6 +223,8 @@ def create_vapi_agent(port: int = 8008):
         ctx.logger.info(f"📞 Vapi call request for: {msg.property_address}")
         ctx.logger.info(f"   User: {msg.user_name}")
         ctx.logger.info(f"   Leverage Score: {msg.intelligence.get('leverage_score', 0)}/10")
+        ctx.logger.info(f"   Findings: {len(msg.intelligence.get('findings', []))} leverage points")
+        ctx.logger.info(f"   📋 Using property intelligence data from prober agent")
 
         if not vapi_client:
             await ctx.send(sender, VapiResponse(
@@ -249,11 +249,28 @@ def create_vapi_agent(port: int = 8008):
             
             _validate_vapi_context(vapi_context)
             
-            # Build system prompt and first message
+            # Build system prompt and first message using found house data
+            # The intelligence dict contains all property findings from the prober agent
             system_prompt = build_system_prompt(vapi_context)
-            first_message = f"Hi, I'm calling on behalf of {msg.user_name} regarding the property at {msg.property_address}. We're very interested and have done some market research. Do you have a moment to discuss?"
+            
+            # Create first message that references the property intelligence
+            property_address = msg.property_address
+            leverage_score = msg.intelligence.get('leverage_score', 0)
+            findings_count = len(msg.intelligence.get('findings', []))
+            
+            first_message = (
+                f"Hi, I'm calling on behalf of {msg.user_name} regarding the property at {property_address}. "
+                f"We've conducted thorough market research and found {findings_count} key leverage points "
+                f"with an overall leverage score of {leverage_score} out of 10. "
+                f"Do you have a moment to discuss the pricing?"
+            )
 
-            # Update Vapi assistant
+            # Update Vapi assistant with property intelligence
+            ctx.logger.info(f"Updating assistant with property intelligence:")
+            ctx.logger.info(f"   - Property: {property_address}")
+            ctx.logger.info(f"   - Leverage Score: {leverage_score}/10")
+            ctx.logger.info(f"   - Findings: {findings_count} leverage points")
+            
             success = vapi_client.update_assistant(
                 system_prompt=system_prompt,
                 first_message=first_message
@@ -262,8 +279,12 @@ def create_vapi_agent(port: int = 8008):
             if not success:
                 raise Exception("Failed to update Vapi assistant")
 
-            # Make the phone call
-            call_id = vapi_client.create_call(customer_phone=target_phone_number)
+            # HACKATHON: Always call YOUR phone number (not listing agent)
+            # This allows you to receive the call and test the negotiation
+            ctx.logger.info(f"📞 Calling YOUR number: {my_phone_number}")
+            ctx.logger.info(f"   (This is for hackathon demo - you'll receive the call)")
+            
+            call_id = vapi_client.create_call(customer_phone=my_phone_number)
 
             if not call_id:
                 raise Exception("Failed to create call")

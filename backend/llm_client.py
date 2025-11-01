@@ -31,7 +31,7 @@ class SimpleLLMAgent:
         self.model = ASI_MODEL
         self.system_prompt = system_prompt or "You are a specialized AI agent. Provide clear, structured responses."
 
-    async def query_llm(self, prompt: str, temperature: float = 0.3, max_tokens: int = 800) -> dict:
+    async def query_llm(self, prompt: str, temperature: float = 0.1, max_tokens: int = 300) -> dict:
         """Query ASI:1 API with a prompt and get response"""
 
         if not self.api_key:
@@ -106,7 +106,7 @@ class SimpleLLMAgent:
             print(f"❌ {self.name}: JSON parsing error: {e}")
             return {}
 
-    async def query_with_json(self, prompt: str, temperature: float = 0.3) -> Dict:
+    async def query_with_json(self, prompt: str, temperature: float = 0.1) -> Dict:
         """Query LLM and automatically parse JSON response"""
         result = await self.query_llm(prompt, temperature=temperature)
 
