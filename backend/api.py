@@ -4,8 +4,7 @@ Negotiation Workflow - FastAPI server for handling property negotiations
 
 This workflow handles:
 1. Probing a property for negotiation intelligence
-2. (Future) Calling Vapi agent with intelligence + user preferences
-3. (Future) Sending email confirmation
+2. Calling Vapi agent with intelligence + user preferences
 """
 
 from fastapi import FastAPI, HTTPException
@@ -17,6 +16,7 @@ import uvicorn
 from uagents import Bureau
 
 from agents.prober_agent import create_prober_agent
+from agents.vapi_agent import create_vapi_agent, VapiRequest, VapiResponse
 from models import ProberRequest, ProberResponse, ProberFinding
 from llm_client import SimpleLLMAgent
 
@@ -36,6 +36,9 @@ class NegotiateResponse(BaseModel):
     message: str
     leverage_score: float
     next_actions: List[str]
+    call_status: Optional[str] = None
+    call_id: Optional[str] = None
+    call_summary: Optional[str] = None
 
 
 # Initialize FastAPI and Agents
@@ -54,6 +57,10 @@ app.add_middleware(
 prober_agent = create_prober_agent(port=8007)
 prober_address = prober_agent.address
 
+# Create Vapi agent
+vapi_agent = create_vapi_agent(port=8008)
+vapi_address = vapi_agent.address
+
 # Create LLM summarizer
 llm_summarizer = SimpleLLMAgent(
     name="NegotiationSummarizer",
@@ -62,6 +69,7 @@ llm_summarizer = SimpleLLMAgent(
 
 # Session storage for responses
 prober_responses = {}
+vapi_responses = {}
 
 
 @prober_agent.on_message(model=ProberResponse)
@@ -69,6 +77,13 @@ async def handle_prober_response(ctx, sender: str, msg: ProberResponse):
     """Store prober response for the REST endpoint to pick up"""
     ctx.logger.info(f"Received prober response for session {msg.session_id}")
     prober_responses[msg.session_id] = msg
+
+
+@vapi_agent.on_message(model=VapiResponse)
+async def handle_vapi_response(ctx, sender: str, msg: VapiResponse):
+    """Store Vapi response for the REST endpoint to pick up"""
+    ctx.logger.info(f"Received Vapi response for session {msg.session_id}")
+    vapi_responses[msg.session_id] = msg
 
 
 # REST API Endpoints
@@ -169,13 +184,76 @@ Focus on practical, actionable steps the buyer should take next."""
 
     print(f"✅ Summary generated with {len(next_actions)} action items")
 
-    # TODO: Call Vapi agent with prober_result + user preferences
+    # Convert ProberResponse findings to dict format for Vapi
+    intelligence_dict = {
+        "leverage_score": prober_result.leverage_score,
+        "overall_assessment": prober_result.overall_assessment,
+        "findings": [
+            {
+                "category": f.category,
+                "summary": f.summary,
+                "details": f.details,
+                "leverage_score": f.leverage_score,
+                "source_url": f.source_url
+            }
+            for f in prober_result.findings
+        ]
+    }
+
+    # Call Vapi agent with prober_result + user preferences
+    call_status = None
+    call_id = None
+    call_summary = None
+
+    try:
+        print(f"\n📞 Initiating Vapi call to listing agent...")
+        vapi_request = VapiRequest(
+            property_address=request.address,
+            user_name=request.name,
+            user_email=request.email,
+            user_preferences=request.additional_info or "No specific preferences provided",
+            intelligence=intelligence_dict,
+            session_id=session_id
+        )
+
+        await vapi_agent._ctx.send(vapi_address, vapi_request)
+
+        # Wait for Vapi response (with timeout)
+        max_wait = 180  # 3 minutes timeout for call
+        waited = 0
+        while session_id not in vapi_responses and waited < max_wait:
+            await asyncio.sleep(1)
+            waited += 1
+
+        if session_id in vapi_responses:
+            vapi_result = vapi_responses.pop(session_id)
+            call_status = vapi_result.status
+            call_id = vapi_result.call_id
+            call_summary = vapi_result.call_summary
+            
+            if vapi_result.status == "success":
+                print(f"✅ Vapi call completed successfully!")
+                print(f"   Call ID: {call_id}")
+                if call_summary:
+                    print(f"   Summary: {call_summary[:100]}...")
+            else:
+                print(f"⚠️ Vapi call failed: {vapi_result.message}")
+        else:
+            print(f"⚠️ Timeout waiting for Vapi call response")
+            call_status = "timeout"
+
+    except Exception as e:
+        print(f"❌ Error initiating Vapi call: {str(e)}")
+        call_status = "error"
 
     return NegotiateResponse(
         success=True,
         message=ai_summary,
         leverage_score=prober_result.leverage_score,
-        next_actions=next_actions
+        next_actions=next_actions,
+        call_status=call_status,
+        call_id=call_id,
+        call_summary=call_summary
     )
 
 
@@ -185,6 +263,7 @@ def start_workflow():
     print("🤝 Estate Negotiation Workflow Starting")
     print("="*60)
     print(f"Prober Agent: {prober_address}")
+    print(f"Vapi Agent: {vapi_address}")
     print("="*60 + "\n")
 
     # Run FastAPI with uvicorn in the same process
@@ -200,16 +279,17 @@ def start_workflow():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # Run prober agent in background
-    async def run_agent():
+    # Run agents in background
+    async def run_agents():
         await prober_agent._startup()
-        # Keep agent running
+        await vapi_agent._startup()
+        # Keep agents running
         while True:
             await asyncio.sleep(1)
 
-    # Run both agent and server
+    # Run both agents and server
     async def run_all():
-        agent_task = asyncio.create_task(run_agent())
+        agent_task = asyncio.create_task(run_agents())
         await server.serve()
 
     try:

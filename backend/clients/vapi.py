@@ -71,7 +71,8 @@ class VapiClient:
         except requests.exceptions.RequestException as e:
             print(f"Failed to update assistant: {e}")
             if hasattr(e, 'response') and e.response is not None:
-                print(f"Response: {e.response.text}")
+                print(f"Response status: {e.response.status_code}")
+                print(f"Response body: {e.response.text}")
             return False
 
     def create_call(

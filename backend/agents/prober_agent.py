@@ -165,7 +165,7 @@ def create_prober_agent(port: int = 8006):
         else:
             ctx.logger.warning(f"Tavily search failed: {tavily_result.get('error')}")
 
-        ctx.logger.info(f"Found {len(all_urls)} unique URLs from Tavily (excluding Zillow/Redfin)")
+        ctx.logger.info(f"Found {len(all_urls)} unique URLs from Tavily")
 
         # Step 2: Use BrightData to scrape the top URLs (limit to 2-3 max)
         scraped_content = []

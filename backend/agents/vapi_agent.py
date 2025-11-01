@@ -207,7 +207,8 @@ def create_vapi_agent(port: int = 8008):
     )
 
     # Initialize Vapi client
-    target_phone_number = "+351912345678"  # Listing agent phone number
+    # Phone number can be set via environment variable or defaults to a placeholder
+    target_phone_number = os.getenv("VAPI_TARGET_PHONE", "+351912345678")
 
     try:
         vapi_client = VapiClient()
