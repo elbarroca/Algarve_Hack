@@ -23,17 +23,16 @@ class UserRequirements(Model):
 
 class PropertyListing(Model):
     """Individual property listing"""
-    address: str
-    city: str
+    address: Optional[str] = None
+    city: Optional[str] = None
     price: Optional[int] = None
     bedrooms: Optional[int] = None
-    bathrooms: Optional[float] = None
+    bathrooms: Optional[int] = None
     sqft: Optional[int] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
     description: Optional[str] = None
     url: Optional[str] = None
-    image_url: Optional[str] = None  # Property image URL
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 # Scoping Agent Models
