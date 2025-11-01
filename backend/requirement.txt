@@ -22,3 +22,12 @@ mcp>=1.0.0
 tavily>=2.1.0
 openai>=1.51.0
 brightdata
+
+# HTML parsing
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+firecrawl-py>=1.0.0
+
+# Testing
+pytest
+requests>=2.31.0
