@@ -7,9 +7,10 @@ import { Property } from '@/lib/mockData';
 interface NegotiationModalProps {
   property: Property;
   onClose: () => void;
+  listing_data?: any;
 }
 
-export function NegotiationModal({ property, onClose }: NegotiationModalProps) {
+export function NegotiationModal({ property, onClose, listing_data }: NegotiationModalProps) {
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -33,6 +34,7 @@ export function NegotiationModal({ property, onClose }: NegotiationModalProps) {
         name: formData.name,
         email: formData.email,
         additional_info: formData.additionalInfo,
+        listing_data: listing_data || property,
       });
 
       // Immediately show probing screen
@@ -49,6 +51,7 @@ export function NegotiationModal({ property, onClose }: NegotiationModalProps) {
           name: formData.name,
           email: formData.email,
           additional_info: formData.additionalInfo,
+          listing_data: listing_data || property,
         }),
       });
 
@@ -151,7 +154,7 @@ export function NegotiationModal({ property, onClose }: NegotiationModalProps) {
             {/* Loading text */}
             <div className="text-center space-y-2">
               <h3 className="text-2xl font-bold text-white">Probing Property</h3>
-              <p className="text-white/60">Gathering intelligence and leverage data...</p>
+              <p className="text-white/60">Gathering intelligence, analyzing market data, and preparing for negotiation...</p>
             </div>
 
             {/* Loading dots */}
@@ -188,7 +191,7 @@ export function NegotiationModal({ property, onClose }: NegotiationModalProps) {
             {/* Loading text */}
             <div className="text-center space-y-2">
               <h3 className="text-2xl font-bold text-white">Call in Progress</h3>
-              <p className="text-white/60">Our AI agent is negotiating on your behalf...</p>
+              <p className="text-white/60">Our AI agent is on a call with the listing agent, negotiating on your behalf...</p>
             </div>
 
             {/* Loading dots */}

@@ -40,8 +40,8 @@ export default function MapView({ selectedProperty, allProperties, topResultCoor
   const [selectedPOI, setSelectedPOI] = useState<any>(null);
   const [showNegotiationModal, setShowNegotiationModal] = useState(false);
   const [viewState, setViewState] = useState({
-    longitude: -122.4331,
-    latitude: 37.7505,
+    longitude: -7.9322,
+    latitude: 37.0194,
     zoom: 10,
   });
   const [radiusCircle, setRadiusCircle] = useState<any>(null);
@@ -190,7 +190,7 @@ export default function MapView({ selectedProperty, allProperties, topResultCoor
       {/* Stats Container */}
       <div className="absolute top-0 left-0 right-0 z-10">
         <NeighborhoodStats
-          location={communityAnalysis?.location || "San Francisco Bay Area"}
+          location={communityAnalysis?.location || "Faro, Portugal"}
           propertyCount={allProperties.length}
           onNextListing={onNextListing}
           currentListingIndex={currentListingIndex}
@@ -256,7 +256,7 @@ export default function MapView({ selectedProperty, allProperties, topResultCoor
         {/* Top Result Marker - Special Star Marker */}
         {topResultCoords && (
           <Marker
-            key={`marker-${currentListingIndex}-${topResultCoords._updateKey || ''}`}
+            key={`marker-${currentListingIndex}-${topResultCoords.address || ''}`}
             longitude={topResultCoords.longitude}
             latitude={topResultCoords.latitude}
             anchor="bottom"
@@ -490,7 +490,7 @@ export default function MapView({ selectedProperty, allProperties, topResultCoor
 
       {/* Floating Sidebar for Top Result */}
       {topResultCoords && topResultDetails && (
-        <div key={`listing-${currentListingIndex}-${topResultDetails?._updateKey || ''}`} className="absolute top-[100px] bottom-4 right-4 w-80 overflow-hidden">
+        <div key={`listing-${currentListingIndex}-${topResultDetails?.title || ''}`} className="absolute top-[100px] bottom-4 right-4 w-80 overflow-hidden">
           <div className="h-full overflow-y-auto bg-slate-900/95 backdrop-blur-xl border-2 border-green-500/40 rounded-xl shadow-2xl overflow-hidden">
             {/* Property Image */}
             {topResultCoords.image_url && (
@@ -636,6 +636,7 @@ export default function MapView({ selectedProperty, allProperties, topResultCoor
               propertyType: topResultDetails!.propertyType || 'Residential',
             }
           }
+          listing_data={topResultDetails}
           onClose={() => setShowNegotiationModal(false)}
         />
       )}

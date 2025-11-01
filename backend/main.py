@@ -193,17 +193,19 @@ def main():
         sessions[msg.session_id]["poi_results"] = []
         sessions[msg.session_id]["poi_count"] = 0
 
-        # If we have search results, geocode the first 5
-        if msg.raw_search_results and len(msg.raw_search_results) > 0:
-            # Limit to 5 for faster processing
-            results_to_geocode = msg.raw_search_results[:5]
-            ctx.logger.info(f"Geocoding {len(results_to_geocode)} results")
+        # If we have formatted properties with full addresses, geocode all of them (up to 10)
+        if msg.formatted_properties_json and len(msg.formatted_properties_json) > 0:
+            # Limit to 10 for comprehensive results
+            properties_to_geocode = msg.formatted_properties_json[:10]
+            ctx.logger.info(f"Geocoding {len(properties_to_geocode)} properties with full addresses")
 
-            for idx, result in enumerate(results_to_geocode):
-                address = result.get("title", "")
+            for idx, prop in enumerate(properties_to_geocode):
+                # Extract full address from location data (formatted properties have detailed location info)
+                location = prop.get("location", {})
+                address = location.get("full_address") or location.get("address") or prop.get("address", "")
 
                 if address:
-                    ctx.logger.info(f"Geocoding result {idx + 1}: {address}")
+                    ctx.logger.info(f"Geocoding property {idx + 1}: {address}")
                     await ctx.send(
                         mapbox_address,
                         MapboxRequest(
@@ -403,8 +405,8 @@ def main():
                     research_msg = sessions[req.session_id]["research"]
 
                     # Wait for Mapbox geocoding if we have search results
-                    if research_msg.raw_search_results and len(research_msg.raw_search_results) > 0:
-                        results_count = min(len(research_msg.raw_search_results), 5)
+                    if research_msg.formatted_properties_json and len(research_msg.formatted_properties_json) > 0:
+                        results_count = min(len(research_msg.formatted_properties_json), 10)
                         ctx.logger.info(f"Waiting for {results_count} geocoding results")
 
                         # Wait up to 15 seconds for all geocoding to complete
@@ -428,7 +430,7 @@ def main():
                         else:
                             ctx.logger.warning(f"Timeout: only {sessions[req.session_id].get('poi_count', 0)}/{results_count} POI searches completed")
 
-                    # Merge geocoded data, images, and POIs into raw_search_results
+                    # Merge geocoded data, images, and POIs into formatted_properties_json
                     enhanced_results = []
                     geocoded_results = sessions[req.session_id].get("geocoded_results", [])
                     result_images = research_msg.result_images if research_msg.result_images else []
@@ -436,50 +438,60 @@ def main():
 
                     ctx.logger.info(f"🔍 Merging data - Geocoded: {len(geocoded_results)}, Images: {len(result_images)}, POI results: {len(poi_results)}")
 
-                    # Safely handle None raw_search_results
-                    raw_results = research_msg.raw_search_results if research_msg.raw_search_results else []
-                    
-                    for idx, result in enumerate(raw_results):
-                        enhanced_result = dict(result)  # Copy the original result
+                    # Use formatted_properties_json (detailed property data) instead of raw_search_results
+                    formatted_props = research_msg.formatted_properties_json if research_msg.formatted_properties_json else []
+
+                    for idx, prop in enumerate(formatted_props):
+                        enhanced_prop = dict(prop)  # Copy the original property
 
                         # Find matching geocoded data
                         geocoded = next((g for g in geocoded_results if g["index"] == idx), None)
 
                         if geocoded:
-                            enhanced_result["latitude"] = geocoded["latitude"]
-                            enhanced_result["longitude"] = geocoded["longitude"]
-                            enhanced_result["address"] = geocoded["address"]
+                            # Add coordinates to the property
+                            enhanced_prop["latitude"] = geocoded["latitude"]
+                            enhanced_prop["longitude"] = geocoded["longitude"]
+                            # Also update location object if it exists
+                            if "location" not in enhanced_prop:
+                                enhanced_prop["location"] = {}
+                            enhanced_prop["location"]["latitude"] = geocoded["latitude"]
+                            enhanced_prop["location"]["longitude"] = geocoded["longitude"]
 
-                        # Add image URL if available for this result
+                        # Add image URL if available for this property
                         image_data = next((img for img in result_images if img["index"] == idx), None)
                         if image_data:
-                            enhanced_result["image_url"] = image_data["image_url"]
-                            ctx.logger.info(f"Added image to result {idx + 1}")
+                            enhanced_prop["image_url"] = image_data["image_url"]
+                            ctx.logger.info(f"Added image to property {idx + 1}")
 
-                        # Add POIs if available for this result
+                        # Add POIs if available for this property
                         poi_data = next((p for p in poi_results if p["listing_index"] == idx), None)
                         if poi_data:
-                            enhanced_result["pois"] = poi_data["pois"]
-                            ctx.logger.info(f"✅ Added {len(poi_data['pois'])} POIs to result {idx + 1}")
+                            enhanced_prop["pois"] = poi_data["pois"]
+                            ctx.logger.info(f"✅ Added {len(poi_data['pois'])} POIs to property {idx + 1}")
                         else:
-                            enhanced_result["pois"] = []
-                            ctx.logger.warning(f"⚠️ No POI data found for result {idx + 1}")
+                            enhanced_prop["pois"] = []
+                            ctx.logger.warning(f"⚠️ No POI data found for property {idx + 1}")
 
                         # IMPORTANT: Add to results array
-                        enhanced_results.append(enhanced_result)
+                        enhanced_results.append(enhanced_prop)
 
-                    ctx.logger.info(f"📊 Total enhanced results: {len(enhanced_results)}")
-                    for idx, result in enumerate(enhanced_results):
-                        ctx.logger.info(f"   Result {idx + 1}: {result.get('title', 'No title')[:50]}, POIs: {len(result.get('pois', []))}")
+                    ctx.logger.info(f"📊 Total enhanced properties: {len(enhanced_results)}")
+                    for idx, prop in enumerate(enhanced_results):
+                        location = prop.get("location", {})
+                        address = location.get("full_address") or location.get("address") or prop.get("address", "No address")
+                        ctx.logger.info(f"   Property {idx + 1}: {address[:80]}, POIs: {len(prop.get('pois', []))}")
 
                     # Build top_result_coordinates from first geocoded result
                     top_result_coords = None
                     if len(enhanced_results) > 0 and "latitude" in enhanced_results[0]:
+                        first_prop = enhanced_results[0]
+                        location = first_prop.get("location", {})
+                        address = location.get("full_address") or location.get("address") or first_prop.get("address", "")
                         top_result_coords = {
-                            "latitude": enhanced_results[0]["latitude"],
-                            "longitude": enhanced_results[0]["longitude"],
-                            "address": enhanced_results[0].get("address", enhanced_results[0].get("title", "")),
-                            "image_url": enhanced_results[0].get("image_url")
+                            "latitude": first_prop["latitude"],
+                            "longitude": first_prop["longitude"],
+                            "address": address,
+                            "image_url": first_prop.get("image_url")
                         }
 
                     # Build community analysis data if available

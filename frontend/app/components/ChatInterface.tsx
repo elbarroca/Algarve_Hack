@@ -2,12 +2,13 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from 'react';
-import { ChatMessage, PropertyListing } from '../types/api';
+import { ChatMessage, PropertyListing, ChatResponse } from '../types/api';
 import { realAPI } from '../services/api';
 
 interface ChatInterfaceProps {
   onPropertiesFound?: (properties: PropertyListing[]) => void;
   onMessageReceived?: (message: string, isComplete: boolean) => void;
+  onRawSearchResults?: (results: any[]) => void;
 }
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({
@@ -67,10 +68,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       
       // Parse properties from raw_search_results or properties array
       let properties: PropertyListing[] = [];
+      const responseData = response.data as ChatResponse['data'];
       
-      if (response.data.raw_search_results && response.data.raw_search_results.length > 0) {
+      if (responseData.raw_search_results && responseData.raw_search_results.length > 0) {
         // Convert raw_search_results to PropertyListing format
-        properties = response.data.raw_search_results.map((result: any) => ({
+        properties = responseData.raw_search_results.map((result: any) => ({
           address: result.title || result.address || 'Endereço não disponível',
           city: result.location || extractCityFromTitle(result.title || ''),
           price: extractPrice(result.title || result.description || ''),
@@ -82,11 +84,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           longitude: result.longitude,
           image_url: result.image_url,
         }));
-      } else if (response.data.properties && response.data.properties.length > 0) {
-        properties = response.data.properties;
+      } else if (responseData.properties && responseData.properties.length > 0) {
+        properties = responseData.properties;
       }
       
-      const isComplete = response.data.is_complete || false;
+      const isComplete = responseData.is_complete || false;
 
       const assistantMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),

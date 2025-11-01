@@ -24,11 +24,11 @@ export default function Home() {
     const convertedProperties: Property[] = geoReady.map((prop, idx) => ({
       id: idx + 1000,
       address: prop.address || prop.title || 'Unknown Address',
-      city: prop.location || 'Bay Area',
-      state: 'CA',
+      city: prop.location || 'Faro',
+      state: 'Faro',
       price: prop.price || 0,
       bedrooms: prop.bedrooms || 0,
-      bathrooms: prop.bathrooms || 0,
+      bathrooms: prop.bathrooms || 0, 
       sqft: 0,
       latitude: prop.latitude,
       longitude: prop.longitude,
@@ -50,12 +50,22 @@ export default function Home() {
     setRawSearchResults(limitedResults);
     setCurrentListingIndex(0); // Reset to first listing
 
-    // Extract top result details
+    // Extract top result details and coordinates
     if (limitedResults.length > 0) {
       const topResult = limitedResults[0];
       console.log('[Home] Top result details:', topResult);
       console.log('[Home] Top result POIs:', topResult.pois);
       setTopResultDetails(topResult);
+      
+      // Update top result coordinates if available
+      if (topResult.latitude && topResult.longitude) {
+        setTopResultCoords({
+          latitude: topResult.latitude,
+          longitude: topResult.longitude,
+          address: topResult.address || topResult.title || 'Unknown Address',
+          image_url: topResult.image_url
+        });
+      }
     }
   };
 
@@ -68,23 +78,18 @@ export default function Home() {
     const nextListing = rawSearchResults[nextIndex];
     console.log('[Home] Cycling to listing', nextIndex + 1, 'of', rawSearchResults.length, ':', nextListing);
 
-    // Force update by creating completely new objects with timestamp
-    const timestamp = Date.now();
-
-    // Update top result details - create new object to force re-render
+    // Update top result details
     setTopResultDetails({
-      ...nextListing,
-      _updateKey: timestamp
+      ...nextListing
     });
 
-    // Update coordinates - create new object to force map update
+    // Update coordinates
     if (nextListing.latitude && nextListing.longitude) {
       setTopResultCoords({
         latitude: nextListing.latitude,
         longitude: nextListing.longitude,
         address: nextListing.address || nextListing.title || 'Unknown Address',
-        image_url: nextListing.image_url,
-        _updateKey: timestamp
+        image_url: nextListing.image_url
       });
     }
   };
@@ -108,6 +113,9 @@ export default function Home() {
           onRawSearchResults={handleRawSearchResults}
           onCommunityAnalysis={handleCommunityAnalysis}
           sessionId={sessionId}
+          onListingSelect={setCurrentListingIndex}
+          currentListingIndex={currentListingIndex}
+          onTopResultDetails={setTopResultDetails}
         />
       </div>
       <div className="w-3/4 h-full">

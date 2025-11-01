@@ -186,7 +186,7 @@ interface NeighborhoodStatsProps {
   communityAnalysis?: any;
 }
 
-export default function NeighborhoodStats({ location = 'San Francisco, CA', propertyCount = 0, onNextListing, currentListingIndex = 0, totalListings = 0, communityAnalysis }: NeighborhoodStatsProps) {
+export default function NeighborhoodStats({ location = 'Faro, Portugal', propertyCount = 0, onNextListing, currentListingIndex = 0, totalListings = 0, communityAnalysis }: NeighborhoodStatsProps) {
   const [modalContent, setModalContent] = useState<{
     title: string;
     score: number;

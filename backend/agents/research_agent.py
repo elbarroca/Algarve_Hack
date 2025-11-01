@@ -5,9 +5,12 @@ from clients.brigthdata import BrightDataClient
 from clients.firecrawl_mcp import get_firecrawl_mcp_client
 from utils.scraper import (
     extract_properties_from_casa_sapo_listing,
+    extract_properties_from_idealista_listing,
+    extract_properties_from_generic_listing,
     filter_rental_properties,
     format_property_json,
     extract_property_from_casa_sapo_html,
+    is_individual_listing_url,
 )
 from utils.firecrawl_scraper import get_firecrawl_scraper
 import aiohttp, os, json
@@ -287,25 +290,47 @@ async def scrape_listing_page(
                 except Exception as e:
                     ctx.logger.warning(f"Bright Data scrape failed: {e}")
             
-            # Parse properties from HTML
+            # Parse properties from HTML - detect site and use appropriate extractor
             if html_content:
-                # Check if this is a Casa Sapo listing page
+                listing_properties = []
+                
+                # Detect which real estate site we're scraping
                 if 'casa.sapo.pt' in result_url:
-                    # Extract properties from listing page using utils
+                    ctx.logger.info(f"Extracting from Casa Sapo listing: {result_url}")
                     listing_properties = extract_properties_from_casa_sapo_listing(html_content, result_url)
-                    return {
-                        "listing_properties": listing_properties,
-                        "result_url": result_url
-                    }
+                elif 'idealista.pt' in result_url or 'idealista.com' in result_url:
+                    ctx.logger.info(f"Extracting from Idealista listing: {result_url}")
+                    listing_properties = extract_properties_from_idealista_listing(html_content, result_url)
+                elif any(site in result_url for site in ['imovirtual.com', 'remax.pt', 'century21.pt', 'imoovivo.com']):
+                    ctx.logger.info(f"Extracting from generic Portuguese site: {result_url}")
+                    listing_properties = extract_properties_from_generic_listing(html_content, result_url)
                 else:
-                    # For non-Casa Sapo sites, log and skip
-                    ctx.logger.info(f"Skipping non-Casa Sapo site: {result_url}")
+                    ctx.logger.info(f"Unknown site, trying generic extraction: {result_url}")
+                    listing_properties = extract_properties_from_generic_listing(html_content, result_url)
+                
+                if listing_properties:
+                    # Validate all properties have individual listing URLs
+                    validated_properties = []
+                    for prop in listing_properties:
+                        prop_url = prop.get('url', '')
+                        if prop_url and is_individual_listing_url(prop_url):
+                            validated_properties.append(prop)
+                            ctx.logger.info(f"✅ Validated individual listing URL: {prop_url[:80]}")
+                        else:
+                            ctx.logger.warning(f"❌ Rejected invalid/feed URL: {prop_url[:80]}")
+                    
+                    if validated_properties:
+                        return {
+                            "listing_properties": validated_properties,
+                            "result_url": result_url
+                        }
+                    else:
+                        ctx.logger.warning(f"No valid individual listings found in {result_url}")
             
             return None
         except Exception as e:
             ctx.logger.warning(f"Failed to scrape listing page {idx + 1}: {e}")
             return None
-
 
 async def scrape_property_details(
     prop_data: dict,
@@ -324,9 +349,14 @@ async def scrape_property_details(
     if not prop_url:
         return None
     
+    # CRITICAL: Validate this is an individual listing URL, not a feed page
+    if not is_individual_listing_url(prop_url):
+        ctx.logger.warning(f"❌ Rejected feed/search URL in detail scraping: {prop_url[:80]}")
+        return None
+    
     async with semaphore:  # Limit concurrent requests
         try:
-            ctx.logger.info(f"  → Scraping individual property: {prop_url}")
+            ctx.logger.info(f"  → Scraping individual property detail page: {prop_url[:80]}")
             
             detail_html = None
             
@@ -511,6 +541,75 @@ def score_property_match(prop_data: dict, requirements) -> float:
     return max(0.0, min(100.0, score))
 
 
+def merge_properties_with_coordinates(detailed_properties: list, organic_results: list) -> list:
+    """
+    Merge detailed individual property data with organic search results that have coordinates.
+    Returns enhanced properties with both detailed info and coordinates.
+    """
+    if not detailed_properties or not organic_results:
+        return detailed_properties or []
+    
+    enhanced_properties = []
+    
+    for detailed_prop in detailed_properties:
+        # Try to find matching organic result by URL or title similarity
+        best_match = None
+        best_score = 0
+        
+        detailed_url = detailed_prop.get('url', '').lower()
+        detailed_title = (detailed_prop.get('title', '') or detailed_prop.get('address', '')).lower()
+        
+        for organic in organic_results:
+            # Score by URL similarity
+            organic_url = organic.get('link', '').lower()
+            url_score = 0
+            if detailed_url and organic_url:
+                if detailed_url in organic_url or organic_url in detailed_url:
+                    url_score = 50
+                elif any(part in organic_url for part in detailed_url.split('/') if len(part) > 5):
+                    url_score = 30
+            
+            # Score by title similarity  
+            organic_title = organic.get('title', '').lower()
+            title_score = 0
+            if detailed_title and organic_title:
+                title_words = set(detailed_title.split())
+                organic_words = set(organic_title.split())
+                common_words = title_words.intersection(organic_words)
+                if common_words:
+                    title_score = min(30, len(common_words) * 5)
+            
+            total_score = url_score + title_score
+            if total_score > best_score:
+                best_score = total_score
+                best_match = organic
+        
+        # Create enhanced property with both detailed info and coordinates
+        enhanced_prop = detailed_prop.copy()
+        
+        if best_match and best_score > 20:  # Minimum match threshold
+            # Add coordinates from organic result
+            enhanced_prop['latitude'] = best_match.get('latitude')
+            enhanced_prop['longitude'] = best_match.get('longitude')
+            enhanced_prop['geocoded_address'] = best_match.get('title', '')
+            enhanced_prop['match_score'] = best_score
+            
+            # Use organic result's location info if detailed prop lacks it
+            if not enhanced_prop.get('address') and best_match.get('title'):
+                enhanced_prop['address'] = best_match['title']
+        else:
+            # No good match found, add basic coordinates if available
+            if organic_results and len(organic_results) > 0:
+                # Use first organic result's region as fallback
+                enhanced_prop['latitude'] = organic_results[0].get('latitude')
+                enhanced_prop['longitude'] = organic_results[0].get('longitude')
+                enhanced_prop['fallback_coordinates'] = True
+        
+        enhanced_properties.append(enhanced_prop)
+    
+    return enhanced_properties
+
+
 def calculate_negotiation_score(prop_data: dict, requirements: Optional[UserRequirements] = None) -> float:
     """
     Calculate negotiation score (0-10) based on factors that indicate negotiation potential.
@@ -666,7 +765,10 @@ def create_research_agent(port: int = 8002):
         prompt_parts.append("apartamentos casas")
 
         if req.budget_max and req.budget_max < 1000000:
-            prompt_parts.append(f"até {req.budget_max//1000}k€")
+            if req.budget_max < 2000:
+                prompt_parts.append(f"até {req.budget_max}€")
+            else:
+                prompt_parts.append(f"até {req.budget_max//1000}k€")
         elif req.budget_max:
             mil = req.budget_max / 1000000
             prompt_parts.append(f"até {mil:.1f}M€")
@@ -841,15 +943,38 @@ def create_research_agent(port: int = 8002):
                             prop_data = item["prop_data"]
                             prop_url = item["prop_url"]
                             score = item["score"]
-                            
+
                             scraped_properties_data.append(formatted_prop)
-                            
+
                             # Create PropertyListing for compatibility
                             try:
+                                # Extract integer price from formatted_prop structure
+                                price_value = None
+                                if 'price' in formatted_prop:
+                                    if isinstance(formatted_prop['price'], dict):
+                                        price_value = formatted_prop['price'].get('amount')
+                                    else:
+                                        price_value = formatted_prop['price']
+                                elif 'price' in prop_data:
+                                    if isinstance(prop_data['price'], dict):
+                                        price_value = prop_data['price'].get('amount')
+                                    else:
+                                        price_value = prop_data['price']
+
+                                # Ensure price is an integer
+                                if price_value and isinstance(price_value, str):
+                                    try:
+                                        price_value = int(''.join(filter(str.isdigit, price_value)))
+                                    except:
+                                        price_value = None
+
+                                # Extract address from formatted_prop structure
+                                address_value = formatted_prop.get('location', {}).get('full_address') if isinstance(formatted_prop.get('location'), dict) else prop_data.get('location', prop_data.get('street', ''))
+
                                 listing = PropertyListing(
-                                    address=prop_data.get('location', prop_data.get('street', '')),
+                                    address=address_value or prop_data.get('street', 'Unknown'),
                                     city=prop_data.get('city', req.location),
-                                    price=prop_data.get('price'),
+                                    price=price_value,
                                     bedrooms=prop_data.get('bedrooms'),
                                     bathrooms=prop_data.get('bathrooms'),
                                     sqft=prop_data.get('sqft'),
@@ -872,7 +997,7 @@ def create_research_agent(port: int = 8002):
                                     original_price=prop_data.get('original_price')
                                 )
                                 properties.append(listing)
-                                ctx.logger.info(f"✅ Added rental property (score: {score:.1f}): {prop_data.get('location', 'Unknown')} - {prop_data.get('price', 'N/A')}€")
+                                ctx.logger.info(f"✅ Added rental property (score: {score:.1f}): {address_value} - {price_value}€")
                             except Exception as e:
                                 ctx.logger.warning(f"Failed to create PropertyListing: {e}")
                         
@@ -1054,15 +1179,20 @@ def create_research_agent(port: int = 8002):
 
         ctx.logger.info(f"📊 Final summary: {len(scraped_properties_data) if scraped_properties_data else len(properties)} rental properties, {len(scraped_properties_data)} with full JSON details")
 
+        # Merge detailed property data with coordinates from organic results
+        enhanced_properties_json = merge_properties_with_coordinates(scraped_properties_data, organic_results)
+        if enhanced_properties_json:
+            ctx.logger.info(f"✅ Enhanced {len(enhanced_properties_json)} properties with coordinates for map display")
+
         await ctx.send(sender, ResearchResponse(
-            properties=properties,
+            properties=properties,  # Use PropertyListing objects created earlier
             search_summary=summary,
             total_found=total_results,
             session_id=msg.session_id,
             raw_search_results=organic_results if organic_results else None,
             top_result_image_url=top_result_image,
             result_images=result_images if result_images else None,
-            formatted_properties_json=scraped_properties_data if scraped_properties_data else None
+            formatted_properties_json=enhanced_properties_json if enhanced_properties_json else scraped_properties_data
         ))
 
     return agent

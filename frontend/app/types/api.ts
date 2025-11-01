@@ -106,6 +106,15 @@ export interface ChatResponse {
     agent_message?: string;
     is_complete?: boolean;
     is_general_question?: boolean;
+    raw_search_results?: any[];
+    top_result_coordinates?: {
+      latitude: number;
+      longitude: number;
+      address: string;
+      image_url?: string;
+    };
+    community_analysis?: any;
+    poi_results?: any[];
   };
 }
 

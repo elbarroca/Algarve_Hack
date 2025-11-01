@@ -5,6 +5,150 @@ import re
 import json
 from typing import Optional, List, Dict
 from bs4 import BeautifulSoup
+from urllib.parse import unquote, urljoin
+
+
+def is_individual_listing_url(url: str) -> bool:
+    """
+    Validate if a URL points to an individual property listing (not a search/feed page).
+    Returns True if it's an individual listing, False if it's a feed/search page.
+    """
+    if not url:
+        return False
+    
+    url_lower = url.lower()
+    
+    # Feed/search page patterns (should be excluded)
+    # BUT: Idealista individual URLs can have /arrendar-casas/ in them, so we need to be careful
+    feed_patterns = [
+        '/search', '/list', '/results', '/pesquisa', '/listings',
+        '/venda-', '/aluguer-',  # Search category pages
+        '/for-sale', '/for-rent', '/to-rent' , '/rent/'
+    ]
+    
+    # Idealista-specific: check if it's a search/feed page (has query params or ends with /)
+    # Individual Idealista URLs: /arrendar-casas/faro/apartamento-123456.html or /imovel/123456.html
+    # Feed pages: /arrendar-casas/faro/ or /arrendar-casas/faro/?ordenado-por=preco-asc
+    is_idealista_feed = False
+    if 'idealista.pt' in url_lower:
+        # Feed pages usually end with / or have query params without a property ID
+        if url_lower.endswith('/') or (url_lower.count('/') <= 4 and '?' in url_lower):
+            # Check if it has a property ID pattern
+            if not re.search(r'-\d{6,}\.html|/imovel/\d+|/apartamento-\d+|/moradia-\d+|/casa-\d+', url_lower):
+                is_idealista_feed = True
+    
+    # Check other feed patterns (but exclude Idealista URLs that might have /arrendar- in path)
+    is_feed = False
+    if not is_idealista_feed:
+        is_feed = any(pattern in url_lower for pattern in feed_patterns)
+        # Also check for search pages that aren't Idealista
+        if '/comprar-' in url_lower and 'idealista.pt' not in url_lower:
+            is_feed = True
+        if '/alugar-' in url_lower and 'idealista.pt' not in url_lower:
+            is_feed = True
+        if '/arrendar-' in url_lower and 'idealista.pt' not in url_lower:
+            is_feed = True
+    
+    # Individual listing patterns (should be included)
+    individual_patterns = [
+        r'/imovel/[^/]+[-/]\d+',  # Casa Sapo: /imovel/apartamento-faro-123456
+        r'/imovel/\d+',  # Idealista: /imovel/123456.html
+        r'/imoveis/[^/]+[-/]\d+',  # General: /imoveis/apartamento-123456
+        r'/detail/\d+',  # /detail/123456
+        r'/property/\d+',  # /property/123456
+        r'/anuncio/\d+',  # ImOvirtual: /anuncio/123456
+        r'/anuncio/[^/]+-\d+',  # ImOvirtual: /anuncio/apartamento-t2-faro-123456
+        r'-\d{6,}\.html',  # Idealista: /arrendar-casas/faro/apartamento-123456.html
+        r'/imovel-\d+',  # Idealista: /imovel-123456
+        r'/apartamento-\d+',  # /apartamento-123456-faro.html
+        r'/moradia-\d+',  # /moradia-123456-algarve.html
+        r'/apartamento/\d+',  # /apartamento/123456
+        r'/moradia/\d+',  # /moradia/123456
+        r'/casa/\d+',  # /casa/123456
+        r'/casa-\d+',  # /casa-123456.html
+        r'[-/]ID\d+',  # /property-ID123456
+        # Idealista pattern: /arrendar-casas/{city}/{property-type}-{id}.html
+        r'/arrendar-casas/[^/]+/[^/]+-\d{6,}\.html',  # /arrendar-casas/faro/apartamento-123456.html
+        r'/comprar-casas/[^/]+/[^/]+-\d{6,}\.html',  # /comprar-casas/faro/apartamento-123456.html
+    ]
+    
+    # Check if it matches individual listing patterns
+    is_individual = any(re.search(pattern, url_lower) for pattern in individual_patterns)
+    
+    # If it has query parameters (? in URL), it's likely a search page unless it's clearly an individual listing
+    has_query_params = '?' in url and not is_individual
+    
+    # Return True only if it's clearly an individual listing and not a feed page
+    return is_individual and not (is_feed or has_query_params or is_idealista_feed)
+
+
+def extract_individual_property_url_from_card(card_element, base_url: str = '') -> Optional[str]:
+    """
+    Extract the individual property detail page URL from a property card element.
+    Handles different real estate site structures (Casa Sapo, Idealista, ImOvirtual, etc.)
+    """
+    if not card_element:
+        return None
+
+    # Try to find the main property link
+    # Usually the property card has a primary link to the detail page
+    link_elem = None
+
+    # Try different link selection strategies (ordered by specificity)
+    strategies = [
+        # Casa Sapo specific
+        ('a', {'class': re.compile(r'propertyCardStyled__Link', re.I)}),
+        ('a', {'class': re.compile(r'searchPropertyCard__container', re.I)}),
+        ('a', {'href': re.compile(r'/imovel/[^/]+-\d+', re.I)}),  # Casa Sapo individual listings
+        # Idealista specific
+        ('a', {'class': re.compile(r'item-link', re.I)}),
+        # General patterns
+        ('a', {'class': re.compile(r'property.*link|detail.*link|card.*link', re.I)}),
+        ('a', {'href': re.compile(r'/(imovel|property|detail|anuncio|apartamento|moradia|casa)/', re.I)}),
+        ('a', {'href': True}),  # Fallback: any link
+    ]
+
+    for tag, attrs in strategies:
+        # Find all links matching the strategy
+        link_elems = card_element.find_all(tag, attrs, limit=5)  # Check multiple links
+
+        for link_elem in link_elems:
+            href = link_elem.get('href', '')
+
+            if not href:
+                continue
+
+            # Handle tracking URLs (extract actual URL)
+            if 'l=' in href or 'url=' in href:
+                # Extract from tracking parameter
+                url_match = re.search(r'[?&](?:l|url)=([^&]+)', href)
+                if url_match:
+                    try:
+                        href = unquote(url_match.group(1))
+                    except:
+                        pass
+
+            # Build full URL
+            if href.startswith('http'):
+                full_url = href
+            elif href.startswith('/'):
+                # Use base_url domain
+                if base_url:
+                    domain_match = re.match(r'(https?://[^/]+)', base_url)
+                    if domain_match:
+                        full_url = domain_match.group(1) + href
+                    else:
+                        full_url = href
+                else:
+                    full_url = href
+            else:
+                full_url = urljoin(base_url, href) if base_url else href
+
+            # Validate it's an individual listing
+            if is_individual_listing_url(full_url):
+                return full_url
+
+    return None
 
 
 def extract_property_from_casa_sapo_html(html_content: str, url: str) -> Optional[Dict]:
@@ -182,9 +326,14 @@ def extract_properties_from_casa_sapo_listing(html_content: str, base_url: str) 
     properties = []
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
-        
-        # Find all property cards
-        property_cards = soup.find_all('div', class_='property')
+
+        # Find all property cards - try multiple selectors
+        property_cards = (
+            soup.find_all('div', class_='property') or
+            soup.find_all('div', class_=re.compile(r'propertyCard|searchPropertyCard', re.I)) or
+            soup.find_all('article', class_=re.compile(r'property', re.I)) or
+            soup.find_all('div', {'data-testid': re.compile(r'property', re.I)})
+        )
         
         for card in property_cards:
             prop = {}
@@ -250,19 +399,15 @@ def extract_properties_from_casa_sapo_listing(html_content: str, base_url: str) 
                             if img_urls:
                                 prop['image_url'] = img_urls[-1]
             
-            # Extract URL from link
-            link_elem = card.find('a', href=True)
-            if link_elem:
-                href = link_elem.get('href')
-                # Extract actual URL from tracking URL
-                if 'l=' in href:
-                    url_match = re.search(r'l=([^&]+)', href)
-                    if url_match:
-                        prop['url'] = url_match.group(1)
-                    else:
-                        prop['url'] = href
-                else:
-                    prop['url'] = href if href.startswith('http') else f"https://casa.sapo.pt{href}"
+            # Extract individual property detail page URL (not feed URL)
+            individual_url = extract_individual_property_url_from_card(card, base_url)
+            if individual_url:
+                prop['url'] = individual_url
+                print(f"[Scraper] ✅ Found individual listing: {individual_url[:80]}")
+            else:
+                # If we can't find a valid individual URL, skip this card
+                print(f"[Scraper] ⚠️ No valid individual URL found in property card")
+                continue
             
             # Extract JSON-LD data if available
             json_ld_script = card.find('script', type='application/ld+json')
@@ -287,6 +432,63 @@ def extract_properties_from_casa_sapo_listing(html_content: str, base_url: str) 
             if prop:
                 properties.append(prop)
         
+        # FALLBACK: If no property cards found, extract individual property URLs from all links on the page
+        if not properties:
+            print(f"[Casa Sapo Scraper] No property cards found, trying fallback: extracting individual property URLs from links...")
+            all_links = soup.find_all('a', href=True)
+            seen_urls = set()
+            
+            for link in all_links:
+                href = link.get('href', '')
+                if not href:
+                    continue
+                
+                # Convert relative URLs to absolute
+                if href.startswith('/'):
+                    # Casa Sapo URLs
+                    if 'casa.sapo.pt' in base_url:
+                        full_url = 'https://casa.sapo.pt' + href
+                    else:
+                        continue
+                elif href.startswith('http'):
+                    full_url = href
+                else:
+                    continue
+                
+                # Check if this is an individual property listing URL
+                if is_individual_listing_url(full_url) and full_url not in seen_urls:
+                    seen_urls.add(full_url)
+                    
+                    # Try to extract basic info from the link text or nearby elements
+                    prop = {
+                        'url': full_url,
+                        'is_rent': '/alugar' in full_url or '/aluguer' in full_url,
+                    }
+                    
+                    # Extract info from link text
+                    link_text = link.get_text(strip=True)
+                    if link_text:
+                        # Try to extract bedrooms from link text
+                        bed_match = re.search(r'T(\d+)|(\d+)\s*quartos?', link_text, re.I)
+                        if bed_match:
+                            try:
+                                prop['bedrooms'] = int(bed_match.group(1) or bed_match.group(2))
+                            except:
+                                pass
+                        
+                        # Try to extract price from link text
+                        price_match = re.search(r'([\d.]+)\s*€|€\s*([\d.]+)', link_text.replace('.', ''))
+                        if price_match:
+                            try:
+                                prop['price'] = int(price_match.group(1) or price_match.group(2))
+                            except:
+                                pass
+                    
+                    properties.append(prop)
+                    print(f"[Casa Sapo Scraper] ✅ Fallback extracted property URL: {full_url[:80]}")
+            
+            print(f"[Casa Sapo Scraper] Fallback found {len(properties)} individual property URLs")
+        
         return properties
         
     except Exception as e:
@@ -294,15 +496,341 @@ def extract_properties_from_casa_sapo_listing(html_content: str, base_url: str) 
         return []
 
 
+def extract_properties_from_idealista_listing(html_content: str, base_url: str) -> List[Dict]:
+    """
+    Extract multiple properties from an Idealista listing page.
+    Returns list of property dictionaries with individual listing URLs.
+    """
+    properties = []
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # Extract location from listing URL (e.g., "faro" or "faro-distrito" from URL)
+        # Example URLs:
+        # - https://www.idealista.pt/arrendar-casas/faro-distrito/...
+        # - https://www.idealista.pt/arrendar-casas/faro/...
+        city_from_url = None
+        district_from_url = None
+        if base_url:
+            # Match pattern like /faro-distrito/ or /faro/
+            location_match = re.search(r'/(?:arrendar|comprar)-[^/]+/([^/]+)', base_url)
+            if location_match:
+                location_part = location_match.group(1)
+                # Clean up the location (remove query params, normalize)
+                location_clean = location_part.split('?')[0].split('#')[0]
+
+                if '-distrito' in location_clean:
+                    # e.g., "faro-distrito" -> district="Faro", city="Faro"
+                    district_name = location_clean.replace('-distrito', '').capitalize()
+                    district_from_url = district_name
+                    city_from_url = district_name  # Use district name as city fallback
+                else:
+                    # e.g., "faro" -> city="Faro"
+                    city_from_url = location_clean.capitalize()
+
+        # Idealista uses article tags with class 'item'
+        property_cards = soup.find_all('article', class_=re.compile(r'item'))
+        if not property_cards:
+            # Try alternative selectors
+            property_cards = soup.find_all('div', class_=re.compile(r'item-info-container'))
+
+        print(f"[Idealista Scraper] Found {len(property_cards)} property cards")
+        if city_from_url or district_from_url:
+            print(f"[Idealista Scraper] Extracted location from URL: city={city_from_url}, district={district_from_url}")
+
+        for card in property_cards:
+            prop = {}
+            
+            # Extract individual property URL first (most important)
+            individual_url = extract_individual_property_url_from_card(card, base_url)
+            if not individual_url:
+                continue
+            
+            prop['url'] = individual_url
+            
+            # Extract property type and bedrooms
+            type_elem = card.find(['span', 'p'], class_=re.compile(r'item-detail', re.I))
+            if type_elem:
+                type_text = type_elem.get_text(strip=True)
+                prop['property_type'] = type_text
+                
+                # Extract bedrooms (T1, T2, etc. or "2 quartos")
+                bed_match = re.search(r'T(\d+)|(\d+)\s*quartos?', type_text, re.I)
+                if bed_match:
+                    try:
+                        prop['bedrooms'] = int(bed_match.group(1) or bed_match.group(2))
+                    except:
+                        pass
+            
+            # Extract price
+            price_elem = card.find(['span', 'div'], class_=re.compile(r'item-price|price', re.I))
+            if price_elem:
+                price_text = price_elem.get_text(strip=True)
+                price_match = re.search(r'([\d.]+)', price_text.replace('.', ''))
+                if price_match:
+                    try:
+                        prop['price'] = int(price_match.group(1))
+                        # Determine if it's rental or sale based on URL or price text
+                        if '/alugar' in individual_url or '/arrendar' in individual_url or '/aluguer' in individual_url:
+                            prop['is_rent'] = True
+                            prop['price_type'] = 'alugar'
+                    except:
+                        pass
+            
+            # Extract location
+            location_elem = card.find(['p', 'span'], class_=re.compile(r'item-link|location', re.I))
+            if location_elem:
+                prop['location'] = location_elem.get_text(strip=True)
+            
+            # Extract image
+            img_elem = card.find('img')
+            if img_elem:
+                prop['image_url'] = img_elem.get('src') or img_elem.get('data-src') or img_elem.get('data-ondemand-img')
+
+            # Add city and district from URL to improve geocoding accuracy
+            if city_from_url:
+                prop['city'] = city_from_url
+            if district_from_url:
+                prop['district'] = district_from_url
+
+            if prop.get('url'):
+                properties.append(prop)
+                print(f"[Idealista Scraper] ✅ Extracted property: {prop.get('location', 'Unknown')} - {prop.get('url', '')[:80]}")
+        
+        # FALLBACK: If no property cards found, extract individual property URLs from all links on the page
+        if not properties:
+            print(f"[Idealista Scraper] No property cards found, trying fallback: extracting individual property URLs from links...")
+            all_links = soup.find_all('a', href=True)
+            seen_urls = set()
+            
+            for link in all_links:
+                href = link.get('href', '')
+                if not href:
+                    continue
+                
+                # Convert relative URLs to absolute
+                if href.startswith('/'):
+                    # Idealista URLs
+                    if 'idealista.pt' in base_url:
+                        full_url = 'https://www.idealista.pt' + href
+                    else:
+                        continue
+                elif href.startswith('http'):
+                    full_url = href
+                else:
+                    continue
+                
+                # Check if this is an individual property listing URL
+                if is_individual_listing_url(full_url) and full_url not in seen_urls:
+                    seen_urls.add(full_url)
+                    
+                    # Try to extract basic info from the link text or nearby elements
+                    prop = {
+                        'url': full_url,
+                        'is_rent': '/arrendar' in full_url or '/alugar' in full_url,
+                    }
+                    
+                    # Extract info from link text
+                    link_text = link.get_text(strip=True)
+                    if link_text:
+                        # Try to extract bedrooms from link text
+                        bed_match = re.search(r'T(\d+)|(\d+)\s*quartos?', link_text, re.I)
+                        if bed_match:
+                            try:
+                                prop['bedrooms'] = int(bed_match.group(1) or bed_match.group(2))
+                            except:
+                                pass
+                        
+                        # Try to extract price from link text
+                        price_match = re.search(r'([\d.]+)\s*€|€\s*([\d.]+)', link_text.replace('.', ''))
+                        if price_match:
+                            try:
+                                prop['price'] = int(price_match.group(1) or price_match.group(2))
+                            except:
+                                pass
+                    
+                    # Add city and district from URL
+                    if city_from_url:
+                        prop['city'] = city_from_url
+                    if district_from_url:
+                        prop['district'] = district_from_url
+                    
+                    properties.append(prop)
+                    print(f"[Idealista Scraper] ✅ Fallback extracted property URL: {full_url[:80]}")
+            
+            print(f"[Idealista Scraper] Fallback found {len(properties)} individual property URLs")
+        
+        return properties
+        
+    except Exception as e:
+        print(f"[Idealista Scraper Error] {e}")
+        return []
+
+
+def extract_properties_from_generic_listing(html_content: str, base_url: str) -> List[Dict]:
+    """
+    Generic property extraction for unknown Portuguese real estate sites.
+    Attempts to find property cards and extract individual listing URLs.
+    """
+    properties = []
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Try common property card selectors
+        card_selectors = [
+            {'name': 'div', 'class': re.compile(r'property|listing|item|card', re.I)},
+            {'name': 'article', 'class': re.compile(r'property|listing|item', re.I)},
+            {'name': 'li', 'class': re.compile(r'property|listing|item', re.I)},
+        ]
+        
+        property_cards = []
+        for selector in card_selectors:
+            cards = soup.find_all(selector['name'], selector['class'])
+            if cards and len(cards) > 0:
+                property_cards = cards
+                print(f"[Generic Scraper] Found {len(cards)} cards using {selector}")
+                break
+        
+        for card in property_cards:
+            # Extract individual URL
+            individual_url = extract_individual_property_url_from_card(card, base_url)
+            if individual_url:
+                prop = {'url': individual_url}
+                
+                # Try to extract basic info
+                # Price
+                price_elem = card.find(text=re.compile(r'€|EUR', re.I))
+                if price_elem:
+                    price_text = str(price_elem)
+                    price_match = re.search(r'([\d.]+)', price_text.replace('.', ''))
+                    if price_match:
+                        try:
+                            prop['price'] = int(price_match.group(1))
+                        except:
+                            pass
+                
+                # Image
+                img_elem = card.find('img')
+                if img_elem:
+                    prop['image_url'] = img_elem.get('src') or img_elem.get('data-src')
+                
+                properties.append(prop)
+                print(f"[Generic Scraper] ✅ Extracted property URL: {individual_url[:80]}")
+        
+        # FALLBACK: If no property cards found, extract individual property URLs from all links on the page
+        if not properties:
+            print(f"[Generic Scraper] No property cards found, trying fallback: extracting individual property URLs from links...")
+            all_links = soup.find_all('a', href=True)
+            seen_urls = set()
+            
+            # Determine base domain for relative URLs
+            base_domain = ''
+            if 'imovirtual.com' in base_url:
+                base_domain = 'https://www.imovirtual.com'
+            elif 'remax.pt' in base_url:
+                base_domain = 'https://www.remax.pt'
+            elif 'century21.pt' in base_url:
+                base_domain = 'https://www.century21.pt'
+            elif 'supercasa.pt' in base_url:
+                base_domain = 'https://www.supercasa.pt'
+            else:
+                # Try to extract from base_url
+                try:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(base_url)
+                    base_domain = f"{parsed.scheme}://{parsed.netloc}"
+                except:
+                    pass
+            
+            for link in all_links:
+                href = link.get('href', '')
+                if not href:
+                    continue
+                
+                # Convert relative URLs to absolute
+                if href.startswith('/'):
+                    if base_domain:
+                        full_url = base_domain + href
+                    else:
+                        continue
+                elif href.startswith('http'):
+                    full_url = href
+                else:
+                    continue
+                
+                # Check if this is an individual property listing URL
+                if is_individual_listing_url(full_url) and full_url not in seen_urls:
+                    seen_urls.add(full_url)
+                    
+                    # Try to extract basic info from the link text
+                    prop = {
+                        'url': full_url,
+                        'is_rent': '/alugar' in full_url or '/arrendar' in full_url or '/aluguer' in full_url,
+                    }
+                    
+                    # Extract info from link text
+                    link_text = link.get_text(strip=True)
+                    if link_text:
+                        # Try to extract bedrooms from link text
+                        bed_match = re.search(r'T(\d+)|(\d+)\s*quartos?', link_text, re.I)
+                        if bed_match:
+                            try:
+                                prop['bedrooms'] = int(bed_match.group(1) or bed_match.group(2))
+                            except:
+                                pass
+                        
+                        # Try to extract price from link text
+                        price_match = re.search(r'([\d.]+)\s*€|€\s*([\d.]+)', link_text.replace('.', ''))
+                        if price_match:
+                            try:
+                                prop['price'] = int(price_match.group(1) or price_match.group(2))
+                            except:
+                                pass
+                    
+                    properties.append(prop)
+                    print(f"[Generic Scraper] ✅ Fallback extracted property URL: {full_url[:80]}")
+            
+            print(f"[Generic Scraper] Fallback found {len(properties)} individual property URLs")
+        
+        return properties
+        
+    except Exception as e:
+        print(f"[Generic Scraper Error] {e}")
+        return []
+
+
 def filter_rental_properties(properties: List[Dict]) -> List[Dict]:
     """Filter properties to only include rentals."""
-    return [p for p in properties if p.get('is_rent', False) or p.get('price_type', '').lower() in ['alugar', 'rent']]
+    # More permissive filter - include properties that:
+    # 1. Have is_rent=True explicitly set
+    # 2. Have price_type indicating rental
+    # 3. Have price data (indicating they're real listings, not just search results)
+    return [p for p in properties if (
+        p.get('is_rent', False) or 
+        p.get('price_type', '').lower() in ['alugar', 'rent'] or
+        (p.get('price') and p.get('price') > 0)  # Has valid price data
+    )]
 
 
 def format_property_json(property_data: Dict) -> Dict:
     """
     Format property data into standardized JSON format.
     """
+    # Construct full_address from actual address components instead of raw 'location' field
+    # This ensures proper geocoding (raw 'location' often contains search result titles)
+    address_parts = []
+    if property_data.get('street'):
+        address_parts.append(property_data.get('street'))
+    if property_data.get('neighborhood'):
+        address_parts.append(property_data.get('neighborhood'))
+    if property_data.get('city'):
+        address_parts.append(property_data.get('city'))
+    if property_data.get('district'):
+        address_parts.append(property_data.get('district'))
+
+    # Use constructed address if components available, otherwise fallback to raw location
+    full_address = ', '.join(address_parts) if address_parts else property_data.get('location', '')
+
     return {
         'property_type': property_data.get('property_type', ''),
         'location': {
@@ -310,7 +838,7 @@ def format_property_json(property_data: Dict) -> Dict:
             'neighborhood': property_data.get('neighborhood', ''),
             'city': property_data.get('city', ''),
             'district': property_data.get('district', ''),
-            'full_address': property_data.get('location', ''),
+            'full_address': full_address,
             'latitude': property_data.get('latitude'),
             'longitude': property_data.get('longitude'),
         },
@@ -337,4 +865,5 @@ def format_property_json(property_data: Dict) -> Dict:
             'address': property_data.get('seller_address', ''),
         },
     }
+
 
