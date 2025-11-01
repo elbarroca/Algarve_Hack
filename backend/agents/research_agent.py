@@ -2,6 +2,7 @@ from uagents import Agent, Context
 from models import ResearchRequest, ResearchResponse, PropertyListing
 from clients.brigthdata import BrightDataClient
 import aiohttp, os, json
+import re
 
 
 ASI_API_KEY = os.getenv("ASI_API_KEY")
@@ -10,72 +11,83 @@ BRIGHTDATA_TOKEN = os.getenv("BRIGHT_DATA_API_KEY")
 
 
 def extract_first_image_from_markdown(markdown: str) -> str | None:
-    """Extract the first image URL from markdown content."""
-    import re
-    # Look for markdown image syntax: ![alt](url)
+    """Extract the first relevant image URL from markdown content."""
+    assert isinstance(markdown, str), "Markdown content must be a string"
+    
+    # Filter for likely property images (avoid icons, logos, etc.)
     img_pattern = r'!\[.*?\]\((https?://[^\)]+)\)'
     matches = re.findall(img_pattern, markdown)
 
-    if matches:
-        # Filter for likely property images (avoid icons, logos, etc.)
-        for url in matches:
-            # Skip small images, icons, and logos
-            if any(skip in url.lower() for skip in ['icon', 'logo', 'avatar', 'badge', 'button']):
-                continue
-            # Skip very small dimensions in URL
-            if any(size in url.lower() for size in ['16x16', '32x32', '48x48', '64x64']):
-                continue
-            return url
+    for url in matches:
+        # Skip small images, icons, and logos
+        if any(skip in url.lower() for skip in ['icon', 'logo', 'avatar', 'badge', 'button']):
+            continue
+        # Skip very small dimensions in URL
+        if any(size in url.lower() for size in ['16x16', '32x32', '48x48', '64x64']):
+            continue
+        return url
 
     return None
 
 
 def filter_results_by_location(search_results: list, required_location: str) -> list:
-    """Filter out results that are not real estate listings in the requested location."""
+    """Filter search results to include only real estate listings in the specified location."""
+    assert isinstance(search_results, list), "Search results must be a list"
+    assert isinstance(required_location, str), "Location must be a string"
+    
     filtered = []
     location_lower = required_location.lower()
-
-    # Real estate domains we want to keep
     valid_domains = ['idealista.pt', 'imovirtual.com', 'casasapo.pt', 'olx.pt']
 
     for result in search_results:
-        title = result.get("title", "")
-        description = result.get("description", "")
-        link = result.get("link", "")
+        title = result.get("title", "").lower()
+        description = result.get("description", "").lower()
+        link = result.get("link", "").lower()
 
-        title_lower = title.lower()
-        description_lower = description.lower()
-        link_lower = link.lower()
+        # Must be from real estate website and contain location
+        is_valid_site = any(domain in link for domain in valid_domains)
+        has_location = location_lower in title or location_lower in description or location_lower in link
 
-        # First check: Must be from a real estate website
-        is_real_estate_site = any(domain in link_lower for domain in valid_domains)
+        if is_valid_site and has_location:
+            filtered.append(result)
 
-        if not is_real_estate_site:
-            print(f"[Location Filter] ❌ Not a real estate site: {title[:80]}")
-            continue
-
-        # Second check: Must contain the location
-        has_location = location_lower in title_lower or location_lower in description_lower or location_lower in link_lower
-
-        if not has_location:
-            print(f"[Location Filter] ❌ Wrong location: {title[:80]}")
-            continue
-
-        # Passed both checks
-        filtered.append(result)
-
-    print(f"[Location Filter] ✅ Filtered from {len(search_results)} to {len(filtered)} results")
     return filtered
 
 
-async def generate_llm_summary(search_results: list, requirements, original_query: str) -> str:
-    """Use ASI-1 to generate a conversational summary from search results."""
+def _build_search_query(requirements) -> str:
+    """Construct optimized search query from user requirements."""
+    parts = [requirements.location]
+
+    if "CA" not in requirements.location.upper() and "CALIFORNIA" not in requirements.location.upper():
+        parts.append("California")
+
+    if requirements.bedrooms:
+        parts.append(f"{requirements.bedrooms} bedroom")
+    if requirements.bathrooms:
+        parts.append(f"{requirements.bathrooms} bath")
+    
+    parts.append("homes for sale")
+
+    if requirements.budget_max:
+        if requirements.budget_max < 1000000:
+            parts.append(f"under ${requirements.budget_max//1000}k")
+        else:
+            mil = requirements.budget_max / 1000000
+            parts.append(f"under ${mil:.1f}M")
+
+    return " ".join(parts)
+
+
+async def _generate_llm_summary(search_results: list, requirements, original_query: str) -> str:
+    """Generate conversational summary using ASI-1 LLM."""
+    assert isinstance(search_results, list), "Search results must be a list"
+    
     headers = {
         "Authorization": f"Bearer {ASI_API_KEY}",
         "Content-Type": "application/json",
     }
 
-    # Format search results
+    # Format search results for LLM
     results_text = ""
     for i, result in enumerate(search_results[:8], 1):
         title = result.get("title", "")
@@ -132,55 +144,133 @@ async def generate_llm_summary(search_results: list, requirements, original_quer
                     return res["choices"][0]["message"]["content"]
                 else:
                     return f"Here are some property listings in {requirements.location}. Check the results for details!"
-    except Exception as e:
-        ctx_logger = None  # We don't have ctx here, so just print
-        print(f"[LLM Summary Error] {e}")
+    except Exception:
         return f"Here are some property listings in {requirements.location}. Check the results for details!"
 
 
-async def decide_tool(prompt: str) -> dict:
-    """Ask ASI-1 which MCP tool to use. Returns fallback plan on error."""
-    headers = {
-        "Authorization": f"Bearer {ASI_API_KEY}",
-        "Content-Type": "application/json",
-    }
+async def _scrape_property_images(results: list, brightdata) -> list:
+    """Extract property images from search results using web scraping."""
+    assert isinstance(results, list), "Results must be a list"
+    result_images = []
 
-    body = {
-        "model": "asi-1-mini",
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a planning model for Bright Data MCP. "
-                    "Given a user query, output JSON {tool:'', arguments:{}} only."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(ASI_URL, headers=headers, json=body) as resp:
-            status = resp.status
+    for idx, result in enumerate(results[:5]):
+        result_url = result.get("link", "")
+        if result_url and ("olx.pt" in result_url or "idealista.pt" in result_url):
             try:
-                res = await resp.json()
+                scrape_result = await brightdata.call("scrape_as_markdown", {"url": result_url})
+                if scrape_result["success"]:
+                    markdown = scrape_result.get("output", "")
+                    image_url = extract_first_image_from_markdown(markdown)
+                    if image_url:
+                        result_images.append({"index": idx, "image_url": image_url})
             except Exception:
-                text = await resp.text()
-                return {"tool": "search_engine", "arguments": {"query": prompt}, "error": f"Bad JSON: {text}"}
+                continue  # Continue with next result if scraping fails
 
-    # 🔎 Debug: if API returned an error, log and fall back
-    if "choices" not in res:
-        print(f"[ASI-1 ERROR] status={status}, response={res}")
-        return {"tool": "search_engine", "arguments": {"query": prompt}, "error": res.get("error", res)}
+    return result_images
 
-    # ✅ Extract output safely
-    raw = res["choices"][0]["message"]["content"]
+
+def _parse_property_listings(data: dict, location: str) -> tuple[list, list]:
+    """Parse property data from various response formats."""
+    assert isinstance(data, dict), "Data must be a dictionary"
+    
+    properties = []
+    organic_results = []
+
+    if "organic" in data:
+        organic_results = data.get("organic", [])
+
+    if "properties" in data:
+        for prop_data in data.get("properties", []):
+            try:
+                listing = PropertyListing(
+                    address=prop_data.get("address", "Unknown"),
+                    city=prop_data.get("city", location),
+                    price=prop_data.get("price"),
+                    bedrooms=prop_data.get("bedrooms"),
+                    bathrooms=prop_data.get("bathrooms"),
+                    sqft=prop_data.get("sqft"),
+                    description=prop_data.get("description"),
+                    url=prop_data.get("url"),
+                    latitude=None,
+                    longitude=None
+                )
+                properties.append(listing)
+            except Exception:
+                continue  # Skip invalid property data
+
+    return properties, organic_results
+
+
+async def _handle_search_results(result: dict, req, session_id: str, sender, ctx) -> ResearchResponse:
+    """Process search results and generate appropriate response."""
+    if not result["success"]:
+        return ResearchResponse(
+            properties=[],
+            search_summary=f"Search failed: {result.get('error', 'Unknown error')}",
+            total_found=0,
+            session_id=session_id
+        )
+
+    # Parse response and extract property listings
+    raw_output = result.get("output", "")
+    properties = []
+    organic_results = []
+    result_images = []
+
     try:
-        return json.loads(raw)
-    except Exception:
-        return {"tool": "search_engine", "arguments": {"query": prompt}}
+        data = json.loads(raw_output)
+        properties, organic_results = _parse_property_listings(data, req.location)
+
+        # Filter by location if we have organic results
+        if organic_results:
+            organic_results = filter_results_by_location(organic_results, req.location)
+            if not organic_results:
+                return ResearchResponse(
+                    properties=[],
+                    search_summary=f"No properties found specifically in {req.location}. Try expanding to nearby areas.",
+                    total_found=0,
+                    session_id=session_id,
+                    raw_search_results=[],
+                    top_result_image_url=None,
+                    result_images=[]
+                )
+
+            # Scrape images from top results
+            result_images = await _scrape_property_images(organic_results, ctx.brightdata)
+
+    except json.JSONDecodeError:
+        pass  # Continue with empty results
+
+    # Generate summary based on available data
+    if organic_results and len(organic_results) > 0:
+        summary = await _generate_llm_summary(organic_results, req, "")
+    elif properties:
+        summary = f"Properties in {req.location}"
+        if req.bedrooms:
+            summary += f" with {req.bedrooms} bedrooms"
+        if req.budget_max:
+            mil = req.budget_max / 1000000
+            summary += f" under ${mil:.1f}M"
+    else:
+        summary = f"No properties found matching your criteria in {req.location}"
+
+    # Prepare response data
+    total_results = len(organic_results) if organic_results else len(properties)
+    top_result_image = result_images[0]["image_url"] if result_images else None
+
+    return ResearchResponse(
+        properties=properties,
+        search_summary=summary,
+        total_found=total_results,
+        session_id=session_id,
+        raw_search_results=organic_results if organic_results else None,
+        top_result_image_url=top_result_image,
+        result_images=result_images if result_images else None
+    )
+
 
 def create_research_agent(port: int = 8002):
+    """Create and configure the research agent for property intelligence gathering."""
     agent = Agent(
         name="research_agent",
         port=port,
@@ -188,7 +278,7 @@ def create_research_agent(port: int = 8002):
         endpoint=[f"http://localhost:{port}/submit"],
     )
 
-    brightdata = BrightDataClient()
+    agent.brightdata = BrightDataClient()
 
     @agent.on_event("startup")
     async def startup(ctx: Context):
@@ -196,207 +286,42 @@ def create_research_agent(port: int = 8002):
 
     @agent.on_message(model=ResearchRequest)
     async def handle_request(ctx: Context, sender: str, msg: ResearchRequest):
+        """Handle property research requests with comprehensive search and analysis."""
         req = msg.requirements
-
-        # Build search query for Bright Data - simpler, more natural query
-        prompt_parts = [req.location]
-
-        # Only add CA if not already in location
-        if "CA" not in req.location.upper() and "CALIFORNIA" not in req.location.upper():
-            prompt_parts.append("California")
-
-        if req.bedrooms:
-            prompt_parts.append(f"{req.bedrooms} bedroom")
-        if req.bathrooms:
-            prompt_parts.append(f"{req.bathrooms} bath")
-
-        prompt_parts.append("homes for sale")
-
-        if req.budget_max and req.budget_max < 1000000:
-            prompt_parts.append(f"under ${req.budget_max//1000}k")
-        elif req.budget_max:
-            mil = req.budget_max / 1000000
-            prompt_parts.append(f"under ${mil:.1f}M")
-
-        prompt = " ".join(prompt_parts)
-
-        ctx.logger.info(f"Search query: {prompt}")
-
-        # Call Bright Data MCP with search_engine tool
-        result = await brightdata.call("search_engine", {"query": prompt, "engine": "google"})
-
-        if not result["success"]:
-            await ctx.send(sender, ResearchResponse(
-                properties=[],
-                search_summary=f"Search failed: {result.get('error', 'Unknown error')}",
-                total_found=0,
-                session_id=msg.session_id
-            ))
-            return
-
-        # Parse the response to extract property listings
-        raw_output = result.get("output", "")
-        ctx.logger.info(f"Raw Bright Data output: {raw_output[:500]}...")
-
-        properties = []
-        organic_results = []
-        result_images = []  # Store images for all results
-
-        try:
-            # Try to parse as JSON first
-            data = json.loads(raw_output)
-
-            # Handle different response formats
-            if isinstance(data, dict):
-                # Search engine results format
-                if "organic" in data:
-                    organic_results = data.get("organic", [])
-
-                    # Check if Bright Data returned empty results
-                    if not organic_results or len(organic_results) == 0:
-                        ctx.logger.warning("Bright Data returned no organic results")
-                        await ctx.send(sender, ResearchResponse(
-                            properties=[],
-                            search_summary=f"We couldn't find any properties matching your criteria in {req.location}. Try adjusting your budget, number of bedrooms, or search in a nearby area.",
-                            total_found=0,
-                            session_id=msg.session_id,
-                            raw_search_results=[],
-                            top_result_image_url=None,
-                            result_images=[]
-                        ))
-                        return
-
-                    ctx.logger.info(f"Found {len(organic_results)} organic search results")
-
-                    # Try to scrape the first 5 results for images
-                    results_to_scrape = organic_results[:5]
-                    ctx.logger.info(f"Scraping {len(results_to_scrape)} results for images")
-
-                    for idx, result in enumerate(results_to_scrape):
-                        result_url = result.get("link", "")
-                        if result_url and ("redfin.com" in result_url or "zillow.com" in result_url):
-                            ctx.logger.info(f"Scraping result {idx + 1} for images: {result_url}")
-                            try:
-                                scrape_result = await brightdata.call(
-                                    "scrape_as_markdown",
-                                    {"url": result_url}
-                                )
-                                if scrape_result["success"]:
-                                    markdown = scrape_result.get("output", "")
-                                    # Extract first image URL from markdown
-                                    image_url = extract_first_image_from_markdown(markdown)
-                                    if image_url:
-                                        ctx.logger.info(f"Found image for result {idx + 1}: {image_url[:100]}")
-                                        result_images.append({"index": idx, "image_url": image_url})
-                                    else:
-                                        ctx.logger.info(f"No image found for result {idx + 1}")
-                                else:
-                                    ctx.logger.warning(f"Scrape failed for result {idx + 1}")
-                            except Exception as e:
-                                ctx.logger.warning(f"Failed to scrape result {idx + 1}: {e}")
-                        else:
-                            ctx.logger.info(f"Skipping result {idx + 1} (not Redfin/Zillow)")
-
-                # Direct property listings format (if available)
-                if "properties" in data:
-                    for prop_data in data.get("properties", []):
-                        try:
-                            listing = PropertyListing(
-                                address=prop_data.get("address", "Unknown"),
-                                city=prop_data.get("city", req.location),
-                                price=prop_data.get("price"),
-                                bedrooms=prop_data.get("bedrooms"),
-                                bathrooms=prop_data.get("bathrooms"),
-                                sqft=prop_data.get("sqft"),
-                                description=prop_data.get("description"),
-                                url=prop_data.get("url"),
-                                latitude=None,
-                                longitude=None
-                            )
-                            properties.append(listing)
-                        except Exception as e:
-                            ctx.logger.warning(f"Skipping invalid property: {e}")
-
-        except json.JSONDecodeError:
-            ctx.logger.warning("Could not parse response as JSON")
-
-        # Filter organic results by location BEFORE processing
-        if organic_results and len(organic_results) > 0:
-            ctx.logger.info(f"Filtering {len(organic_results)} results by location: {req.location}")
-            organic_results = filter_results_by_location(organic_results, req.location)
-            ctx.logger.info(f"After filtering: {len(organic_results)} results remain")
-
-            # Check if filtering removed all results
-            if not organic_results or len(organic_results) == 0:
-                ctx.logger.warning(f"All results filtered out - no properties in {req.location}")
-                await ctx.send(sender, ResearchResponse(
-                    properties=[],
-                    search_summary=f"We couldn't find any properties matching your criteria in {req.location}. The search returned results from other areas, but none specifically in {req.location}. Try expanding your search to nearby cities or adjusting your criteria.",
-                    total_found=0,
-                    session_id=msg.session_id,
-                    raw_search_results=[],
-                    top_result_image_url=None,
-                    result_images=[]
-                ))
-                return
-
-        # Build summary - use LLM if we have organic results
-        total_results = len(organic_results) if organic_results else len(properties)
-
-        if organic_results and len(organic_results) > 0:
-            ctx.logger.info("Generating LLM summary from search results")
-            summary = await generate_llm_summary(organic_results, req, prompt)
-
-        elif properties:
-            summary = f"Here are properties in {req.location}"
-            if req.bedrooms:
-                summary += f" with {req.bedrooms} bedrooms"
-            if req.bathrooms:
-                summary += f" and {req.bathrooms} bathrooms"
-            if req.budget_max:
-                mil = req.budget_max / 1000000
-                summary += f" under ${mil:.1f}M"
-        else:
-            summary = f"No properties found matching your criteria. Try adjusting your search parameters."
-
-        # For backwards compatibility, keep top_result_image as the first image
-        top_result_image = result_images[0]["image_url"] if result_images else None
-
-        await ctx.send(sender, ResearchResponse(
-            properties=properties,
-            search_summary=summary,
-            total_found=total_results,
-            session_id=msg.session_id,
-            raw_search_results=organic_results if organic_results else None,
-            top_result_image_url=top_result_image,
-            result_images=result_images if result_images else None
-        ))
+        prompt = _build_search_query(req)
+        
+        # Execute search via Bright Data
+        result = await agent.brightdata.call("search_engine", {"query": prompt, "engine": "google"})
+        
+        # Process results and generate response
+        response = await _handle_search_results(result, req, msg.session_id, sender, ctx)
+        await ctx.send(sender, response)
 
     return agent
 
 
 def parse_zillow_markdown(markdown: str, requirements) -> list:
-    """Parse Zillow markdown to extract property listings"""
+    """Parse Zillow markdown to extract property listings with validation."""
+    assert isinstance(markdown, str), "Markdown must be a string"
+    assert hasattr(requirements, 'budget_max'), "Requirements must have budget_max attribute"
+    
     properties = []
     lines = markdown.split("\n")
-
     current_property = {}
 
     for line in lines:
-        # Look for addresses in links
+        # Extract address and URL from markdown links
         if ("St," in line or "Ave," in line or "Rd," in line or
             "Blvd," in line or "APT" in line or "Way," in line):
 
             if current_property and "address" in current_property:
-                # Save previous property
                 try:
                     listing = PropertyListing(**current_property)
                     properties.append(listing)
-                except:
+                except Exception:
                     pass
                 current_property = {}
 
-            # Extract address and URL from markdown link
             if "](https://" in line:
                 start = line.find("[") + 1
                 end = line.find("](")
@@ -415,26 +340,24 @@ def parse_zillow_markdown(markdown: str, requirements) -> list:
                     if len(parts) >= 2:
                         current_property["city"] = parts[-2].strip()
 
-        # Look for price
+        # Extract property details
         elif line.strip().startswith("$") and current_property:
             price_str = line.strip().replace("$", "").replace(",", "")
             try:
                 current_property["price"] = int(price_str)
-            except:
+            except ValueError:
                 pass
 
-        # Look for beds/baths/sqft
         elif "**" in line and ("bd" in line or "ba" in line) and current_property:
             # Extract bedrooms
             if "bds" in line or "bd" in line:
                 try:
-                    # Find pattern like "**2** bds"
                     parts = line.split("**")
                     for i, part in enumerate(parts):
-                        if "bd" in parts[i+1] if i+1 < len(parts) else "":
+                        if i+1 < len(parts) and "bd" in parts[i+1]:
                             current_property["bedrooms"] = int(part.strip())
                             break
-                except:
+                except (ValueError, IndexError):
                     pass
 
             # Extract bathrooms
@@ -442,14 +365,14 @@ def parse_zillow_markdown(markdown: str, requirements) -> list:
                 try:
                     parts = line.split("**")
                     for i, part in enumerate(parts):
-                        next_part = parts[i+1] if i+1 < len(parts) else ""
-                        if "ba" in next_part and "bd" not in next_part:
+                        if (i+1 < len(parts) and "ba" in parts[i+1] and 
+                            "bd" not in parts[i+1]):
                             current_property["bathrooms"] = float(part.strip())
                             break
-                except:
+                except (ValueError, IndexError):
                     pass
 
-            # Extract sqft
+            # Extract square footage
             if "sqft" in line:
                 try:
                     sqft_idx = line.find("sqft")
@@ -457,32 +380,26 @@ def parse_zillow_markdown(markdown: str, requirements) -> list:
                     parts = before_sqft.split("**")
                     sqft_str = parts[-2].replace(",", "").strip()
                     current_property["sqft"] = int(sqft_str)
-                except:
+                except (ValueError, IndexError):
                     pass
 
-    # Add last property
+    # Add final property
     if current_property and "address" in current_property:
         try:
             listing = PropertyListing(**current_property)
             properties.append(listing)
-        except:
+        except Exception:
             pass
 
     # Filter by requirements
     filtered = []
     for prop in properties:
-        # Filter by budget
         if requirements.budget_max and prop.price and prop.price > requirements.budget_max:
             continue
-
-        # Filter by bedrooms
         if requirements.bedrooms and prop.bedrooms and prop.bedrooms != requirements.bedrooms:
             continue
-
-        # Filter by bathrooms
         if requirements.bathrooms and prop.bathrooms and prop.bathrooms < requirements.bathrooms:
             continue
-
         filtered.append(prop)
 
     return filtered

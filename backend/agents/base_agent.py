@@ -7,9 +7,89 @@ from llm_client import SimpleLLMAgent
 from clients.tavily import TavilyClient
 
 
-def create_general_agent(port: int = 8003):
-    """Create and configure the general agent"""
+def _build_search_query(question: str, context: str = None) -> str:
+    """Build optimized search query from question and optional context."""
+    assert isinstance(question, str), "Question must be a string"
+    assert context is None or isinstance(context, str), "Context must be a string or None"
+    
+    search_query = question
+    if context:
+        # Extract location from context and append to search
+        location = context.split(": ")[-1] if ": " in context else ""
+        if location:
+            search_query = f"{question} {location}"
+    
+    return search_query
 
+
+def _build_llm_context(question: str, context: str = None, search_results: dict = None) -> str:
+    """Build comprehensive context for LLM from question, context, and search results."""
+    assert isinstance(question, str), "Question must be a string"
+    assert context is None or isinstance(context, str), "Context must be a string or None"
+    assert search_results is None or isinstance(search_results, dict), "Search results must be a dict or None"
+    
+    llm_context = f"User Question: {question}\n\n"
+    
+    if context:
+        llm_context += f"Context: {context}\n\n"
+    
+    llm_context += "Search Results:\n\n"
+    
+    if search_results and search_results.get("results"):
+        for idx, result in enumerate(search_results["results"][:5], 1):
+            llm_context += f"Result {idx}:\n"
+            llm_context += f"Title: {result.get('title', 'N/A')}\n"
+            llm_context += f"URL: {result.get('url', 'N/A')}\n"
+            llm_context += f"Content: {result.get('content', 'N/A')[:800]}...\n\n"
+    
+    return llm_context
+
+
+def _validate_search_results(search_results: dict) -> bool:
+    """Validate search results structure and content."""
+    assert isinstance(search_results, dict), "Search results must be a dictionary"
+    return search_results.get("success", False) and search_results.get("results")
+
+
+async def _perform_search(tavily_client: TavilyClient, query: str) -> dict:
+    """Perform advanced search using Tavily client."""
+    assert hasattr(tavily_client, 'search'), "Tavily client must have search method"
+    assert isinstance(query, str), "Query must be a string"
+    
+    return await tavily_client.search(
+        query=query,
+        search_depth="advanced",
+        max_results=10
+    )
+
+
+async def _generate_response(llm_client: SimpleLLMAgent, prompt: str, session_id: str) -> GeneralResponse:
+    """Generate response using LLM with error handling."""
+    assert hasattr(llm_client, 'query_llm'), "LLM client must have query_llm method"
+    assert hasattr(llm_client, 'parse_json_response'), "LLM client must have parse_json_response method"
+    assert isinstance(prompt, str), "Prompt must be a string"
+    assert isinstance(session_id, str), "Session ID must be a string"
+    
+    result = await llm_client.query_llm(prompt, temperature=0.3, max_tokens=800)
+    
+    if result["success"]:
+        parsed = llm_client.parse_json_response(result["content"])
+        
+        if parsed and "answer" in parsed:
+            return GeneralResponse(
+                answer=parsed["answer"],
+                session_id=session_id
+            )
+    
+    # Fallback response
+    return GeneralResponse(
+        answer="I apologize, but I'm having trouble formulating an answer right now. Could you try rephrasing your question?",
+        session_id=session_id
+    )
+
+
+def create_general_agent(port: int = 8003):
+    """Create and configure the general agent for location-based questions."""
     agent = Agent(
         name="general_agent",
         port=port,
@@ -46,48 +126,24 @@ Respond with a JSON object in this format:
 
     @agent.on_message(model=GeneralRequest)
     async def handle_request(ctx: Context, sender: str, msg: GeneralRequest):
-        ctx.logger.info(f"General agent received question from {sender}: {msg.question}")
-
-        # Build search query - always append context if available
-        search_query = msg.question
-        if msg.context:
-            ctx.logger.info(f"Using context: {msg.context}")
-            # Extract location from context and append to search
-            location = msg.context.split(": ")[-1] if ": " in msg.context else ""
-            search_query = f"{msg.question} {location}"
-
-        ctx.logger.info(f"Search query: {search_query}")
-
-        search_results = await tavily.search(
-            query=search_query,
-            search_depth="advanced",
-            max_results=10
-        )
-
-        if not search_results["success"]:
-            ctx.logger.error(f"Tavily search failed: {search_results['error']}")
+        """Handle general questions with comprehensive search and LLM analysis."""
+        # Build search query
+        search_query = _build_search_query(msg.question, msg.context)
+        
+        # Perform search
+        search_results = await _perform_search(tavily, search_query)
+        
+        # Handle search failure
+        if not _validate_search_results(search_results):
             response = GeneralResponse(
-                answer=f"I'm having trouble searching for that information right now. Error: {search_results['error']}",
+                answer=f"I'm having trouble searching for that information right now. Please try again.",
                 session_id=msg.session_id
             )
             await ctx.send(sender, response)
             return
-    
-        # Build context for LLM from search results
-        llm_context = f"User Question: {msg.question}\n\n"
-
-        # Add conversation context if available
-        if msg.context:
-            llm_context += f"Context: {msg.context}\n\n"
-
-        llm_context += "Search Results:\n\n"
-
-        for idx, result in enumerate(search_results["results"][:5], 1):
-            llm_context += f"Result {idx}:\n"
-            llm_context += f"Title: {result.get('title', 'N/A')}\n"
-            llm_context += f"URL: {result.get('url', 'N/A')}\n"
-            llm_context += f"Content: {result.get('content', 'N/A')[:800]}...\n\n"
-
+        
+        # Build context for LLM
+        llm_context = _build_llm_context(msg.question, msg.context, search_results)
         prompt = f"""{llm_context}
 
 Based on the search results above, answer the user's question: "{msg.question}"
@@ -95,33 +151,9 @@ Based on the search results above, answer the user's question: "{msg.question}"
 Provide a clear, helpful answer. If the search results don't contain enough information to answer the question, say so honestly.
 
 Respond with a JSON object as specified in your instructions."""
-
-        # Query LLM
-        result = await llm_client.query_llm(prompt, temperature=0.3, max_tokens=800)
-
-        if result["success"]:
-            parsed = llm_client.parse_json_response(result["content"])
-
-            if parsed and "answer" in parsed:
-                response = GeneralResponse(
-                    answer=parsed["answer"],
-                    session_id=msg.session_id
-                )
-                ctx.logger.info("Generated answer for general question")
-            else:
-                ctx.logger.warning("Failed to parse LLM response")
-                response = GeneralResponse(
-                    answer="I apologize, but I'm having trouble formulating an answer right now. Could you try rephrasing your question?",
-                    session_id=msg.session_id
-                )
-
-            await ctx.send(sender, response)
-        else:
-            ctx.logger.error(f"LLM error: {result['content']}")
-            response = GeneralResponse(
-                answer="I'm having trouble processing your question right now. Please try again.",
-                session_id=msg.session_id
-            )
-            await ctx.send(sender, response)
+        
+        # Generate and send response
+        response = await _generate_response(llm_client, prompt, msg.session_id)
+        await ctx.send(sender, response)
 
     return agent

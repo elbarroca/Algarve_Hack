@@ -12,157 +12,81 @@ from models import CommunityAnalysisRequest, CommunityAnalysisResponse
 load_dotenv()
 
 
-def create_community_analysis_agent(port: int = 8006):
-    """Create and configure the community analysis agent"""
+def _fetch_articles_by_category(location: str, category: str, max_results: int = 15) -> list:
+    """Fetch articles by category using Tavily search with standardized logic."""
+    assert isinstance(location, str), "Location must be a string"
+    assert isinstance(category, str), "Category must be a string"
+    assert isinstance(max_results, int), "Max results must be an integer"
+    
+    category_queries = {
+        'news': f"{location} local news community safety crime development",
+        'schools': f"{location} schools ratings rankings education quality greatschools niche",
+        'housing': f"{location} housing prices per square foot average home size zillow redfin realtor"
+    }
+    
+    search_query = category_queries.get(category, f"{location} {category}")
+    
+    try:
+        client = TavilyClient(api_key=os.getenv('TAVILY_API_KEY'))
+        response = client.search(
+            query=search_query,
+            max_results=max_results,
+            search_depth="advanced",
+            include_domains=[],
+            exclude_domains=[]
+        )
 
-    agent = Agent(
-        name="community_analysis_agent",
-        port=port,
-        seed="community_analysis_agent_seed",
-        endpoint=[f"http://localhost:{port}/submit"]
-    )
+        articles = []
+        if response and 'results' in response:
+            for result in response['results']:
+                articles.append({
+                    'title': result.get('title', ''),
+                    'url': result.get('url', ''),
+                    'content': result.get('content', ''),
+                    'score': result.get('score', 0)
+                })
+        return articles
+    except Exception:
+        return []
 
-    # Model configuration
-    MODEL_NAME = "asi1-mini"
+
+def _format_articles_for_llm(articles: list, category: str) -> str:
+    """Format articles for LLM consumption with category-specific logic."""
+    assert isinstance(articles, list), "Articles must be a list"
+    assert isinstance(category, str), "Category must be a string"
+    
+    if not articles:
+        return f"No {category}-related articles found.\n\n"
+    
+    formatted = f"Here are {category} articles about this location:\n\n"
+    for i, article in enumerate(articles, 1):
+        formatted += f"{i}. {article['title']}\n"
+        formatted += f"   Content: {article['content'][:300]}...\n"
+        formatted += f"   URL: {article['url']}\n\n"
+    
+    return formatted
+
+
+async def _query_community_model(location: str) -> str:
+    """Query ASI model for community analysis using standardized data processing."""
+    assert isinstance(location, str), "Location must be a string"
+    
+    # Fetch all required data categories
+    articles = _fetch_articles_by_category(location, 'news', 20)
+    school_articles = _fetch_articles_by_category(location, 'schools', 15)
+    housing_articles = _fetch_articles_by_category(location, 'housing', 15)
+
+    # Format for LLM
+    articles_text = _format_articles_for_llm(articles, 'community news')
+    school_text = _format_articles_for_llm(school_articles, 'education')
+    housing_text = _format_articles_for_llm(housing_articles, 'housing')
 
     client = OpenAI(
         base_url='https://api.asi1.ai/v1',
         api_key=os.getenv('ASI_API_KEY'),
     )
 
-    # Initialize Tavily client for real news search
-    tavily_client = TavilyClient(api_key=os.getenv('TAVILY_API_KEY'))
-
-    # Helper function to fetch real news articles using Tavily
-    async def fetch_news_articles(location_name: str) -> list:
-        """Fetch real news articles about a location using Tavily search."""
-        try:
-            search_query = f"{location_name} local news community safety crime development"
-            response = tavily_client.search(
-                query=search_query,
-                max_results=20,
-                search_depth="advanced",
-                include_domains=[],
-                exclude_domains=[]
-            )
-
-            articles = []
-            if response and 'results' in response:
-                for result in response['results']:
-                    articles.append({
-                        'title': result.get('title', ''),
-                        'url': result.get('url', ''),
-                        'content': result.get('content', ''),
-                        'score': result.get('score', 0)
-                    })
-
-            return articles
-        except Exception as e:
-            print(f"Error fetching news articles: {e}")
-            return []
-
-    # Helper function to fetch school-related articles using Tavily
-    async def fetch_school_articles(location_name: str) -> list:
-        """Fetch articles about schools and education in a location using Tavily search."""
-        try:
-            search_query = f"{location_name} schools ratings rankings education quality greatschools niche"
-            response = tavily_client.search(
-                query=search_query,
-                max_results=15,
-                search_depth="advanced",
-                include_domains=[],
-                exclude_domains=[]
-            )
-
-            articles = []
-            if response and 'results' in response:
-                for result in response['results']:
-                    articles.append({
-                        'title': result.get('title', ''),
-                        'url': result.get('url', ''),
-                        'content': result.get('content', ''),
-                        'score': result.get('score', 0)
-                    })
-
-            return articles
-        except Exception as e:
-            print(f"Error fetching school articles: {e}")
-            return []
-
-    # Helper function to fetch housing data using Tavily
-    async def fetch_housing_data(location_name: str) -> list:
-        """Fetch articles about housing prices and market data in a location using Tavily search."""
-        try:
-            search_query = f"{location_name} housing prices per square foot average home size zillow redfin realtor"
-            response = tavily_client.search(
-                query=search_query,
-                max_results=15,
-                search_depth="advanced",
-                include_domains=[],
-                exclude_domains=[]
-            )
-
-            articles = []
-            if response and 'results' in response:
-                for result in response['results']:
-                    articles.append({
-                        'title': result.get('title', ''),
-                        'url': result.get('url', ''),
-                        'content': result.get('content', ''),
-                        'score': result.get('score', 0)
-                    })
-
-            return articles
-        except Exception as e:
-            print(f"Error fetching housing data: {e}")
-            return []
-
-    # Helper function to query the model
-    async def query_model(location_name: str) -> str:
-        """Query the ASI:One model to get community news and safety analysis for a location."""
-        try:
-            # Fetch real news articles using Tavily
-            articles = await fetch_news_articles(location_name)
-            school_articles = await fetch_school_articles(location_name)
-            housing_articles = await fetch_housing_data(location_name)
-
-            # Format the articles for the LLM
-            articles_text = ""
-            if articles:
-                articles_text = "Here are recent news articles about this location:\n\n"
-                for i, article in enumerate(articles, 1):
-                    articles_text += f"{i}. {article['title']}\n"
-                    articles_text += f"   Content: {article['content'][:300]}...\n"
-                    articles_text += f"   URL: {article['url']}\n\n"
-            else:
-                articles_text = "No recent news articles found. Please provide a general analysis based on your knowledge.\n\n"
-
-            # Format school articles for the LLM
-            school_text = ""
-            if school_articles:
-                school_text = "Here are articles about schools and education in this location:\n\n"
-                for i, article in enumerate(school_articles, 1):
-                    school_text += f"{i}. {article['title']}\n"
-                    school_text += f"   Content: {article['content'][:300]}...\n"
-                    school_text += f"   URL: {article['url']}\n\n"
-            else:
-                school_text = "No school-related articles found. Please provide a general school rating based on your knowledge.\n\n"
-
-            # Format housing articles for the LLM
-            housing_text = ""
-            if housing_articles:
-                housing_text = "Here are articles about housing and real estate in this location:\n\n"
-                for i, article in enumerate(housing_articles, 1):
-                    housing_text += f"{i}. {article['title']}\n"
-                    housing_text += f"   Content: {article['content'][:300]}...\n"
-                    housing_text += f"   URL: {article['url']}\n\n"
-            else:
-                housing_text = "No housing-related articles found. Please provide general housing estimates based on your knowledge.\n\n"
-
-            r = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": """
+    system_prompt = """
 You are a community news analyst. You will be given real news articles about a location, and you need to analyze them.
 You MUST respond with ONLY valid JSON in the following format (no additional text):
 
@@ -208,14 +132,93 @@ YOU WILL CHOOSE THE NEWS ARTICLES THAT YOU INCLUDE ACCORDING TO THE FOLLOWING CR
 - Choose sources that are specific news articles about the location, not generic news websites.
 - Choose sources that are relevant and informative to the location.
 - Choose sources that are most recent.
-                    """},
-                    {"role": "user", "content": f"Analyze community news and safety for: {location_name}\n\n{articles_text}\n{school_text}\n{housing_text}"},
-                ],
-                max_tokens=2048,
-            )
-            return str(r.choices[0].message.content)
-        except Exception as e:
-            raise e
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="asi1-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Analyze community news and safety for: {location}\n\n{articles_text}\n{school_text}\n{housing_text}"},
+            ],
+            max_tokens=2048,
+        )
+        return str(response.choices[0].message.content)
+    except Exception:
+        raise
+
+
+def _clean_json_response(response_text: str) -> dict:
+    """Clean and parse JSON response from LLM with robust error handling."""
+    assert isinstance(response_text, str), "Response text must be a string"
+    
+    cleaned_text = response_text.strip()
+    if cleaned_text.startswith("```json"):
+        cleaned_text = cleaned_text[7:]
+    elif cleaned_text.startswith("```"):
+        cleaned_text = cleaned_text[3:]
+
+    if cleaned_text.endswith("```"):
+        cleaned_text = cleaned_text[:-3]
+
+    return json.loads(cleaned_text.strip())
+
+
+def _build_response_data(response_data: dict, location: str, session_id: str) -> CommunityAnalysisResponse:
+    """Build standardized response object from parsed JSON data."""
+    assert isinstance(response_data, dict), "Response data must be a dictionary"
+    assert isinstance(location, str), "Location must be a string"
+    assert isinstance(session_id, str), "Session ID must be a string"
+    
+    overall_data = response_data.get("overall", {})
+    safety_data = response_data.get("safety", {})
+    schools_data = response_data.get("schools", {})
+    housing_data = response_data.get("housing_avg", {})
+
+    return CommunityAnalysisResponse(
+        location=response_data.get("location", location),
+        overall_score=float(overall_data.get("score", 0.0)),
+        overall_explanation=overall_data.get("explanation", "N/A"),
+        safety_score=float(safety_data.get("score", 0.0)),
+        positive_stories=safety_data.get("positive_stories", []),
+        negative_stories=safety_data.get("negative_stories", []),
+        school_rating=float(schools_data.get("score", 0.0)),
+        school_explanation=schools_data.get("explanation", "N/A"),
+        housing_price_per_square_foot=int(housing_data.get("housing_price_per_square_foot", 0)),
+        average_house_size_square_foot=int(housing_data.get("average_house_size_square_foot", 0)),
+        session_id=session_id
+    )
+
+
+def _create_error_response(location: str, session_id: str, error_type: str) -> CommunityAnalysisResponse:
+    """Create standardized error response for various failure scenarios."""
+    assert isinstance(location, str), "Location must be a string"
+    assert isinstance(session_id, str), "Session ID must be a string"
+    assert isinstance(error_type, str), "Error type must be a string"
+    
+    return CommunityAnalysisResponse(
+        location=location,
+        overall_score=0.0,
+        overall_explanation=f"Error: {error_type}",
+        safety_score=0.0,
+        positive_stories=[],
+        negative_stories=[],
+        school_rating=0.0,
+        school_explanation=f"Error: {error_type}",
+        housing_price_per_square_foot=0,
+        average_house_size_square_foot=0,
+        session_id=session_id
+    )
+
+
+def create_community_analysis_agent(port: int = 8006):
+    """Create and configure the community analysis agent for comprehensive location intelligence."""
+    agent = Agent(
+        name="community_analysis_agent",
+        port=port,
+        seed="community_analysis_agent_seed",
+        endpoint=[f"http://localhost:{port}/submit"]
+    )
 
     @agent.on_event("startup")
     async def startup(ctx: Context):
@@ -223,82 +226,23 @@ YOU WILL CHOOSE THE NEWS ARTICLES THAT YOU INCLUDE ACCORDING TO THE FOLLOWING CR
 
     @agent.on_message(model=CommunityAnalysisRequest)
     async def handle_request(ctx: Context, sender: str, msg: CommunityAnalysisRequest):
-        ctx.logger.info(f"Community Analysis agent received request for location: {msg.location_name}")
-
+        """Handle community analysis requests with comprehensive data gathering and LLM analysis."""
         try:
             # Query the model with the location name
-            response_text = await query_model(msg.location_name)
-            ctx.logger.info(f"Generated response for {msg.location_name}")
-
-            # Strip markdown code blocks if present
-            cleaned_text = response_text.strip()
-            if cleaned_text.startswith("```json"):
-                cleaned_text = cleaned_text[7:]
-            elif cleaned_text.startswith("```"):
-                cleaned_text = cleaned_text[3:]
-
-            if cleaned_text.endswith("```"):
-                cleaned_text = cleaned_text[:-3]
-
-            cleaned_text = cleaned_text.strip()
-
-            # Parse the JSON response
-            response_data = json.loads(cleaned_text)
-
-            # Extract nested data
-            overall_data = response_data.get("overall", {})
-            safety_data = response_data.get("safety", {})
-            schools_data = response_data.get("schools", {})
-            housing_data = response_data.get("housing_avg", {})
-
-            response = CommunityAnalysisResponse(
-                location=response_data.get("location", msg.location_name),
-                overall_score=float(overall_data.get("score", 0.0)),
-                overall_explanation=overall_data.get("explanation", "N/A"),
-                safety_score=float(safety_data.get("score", 0.0)),
-                positive_stories=safety_data.get("positive_stories", []),
-                negative_stories=safety_data.get("negative_stories", []),
-                school_rating=float(schools_data.get("score", 0.0)),
-                school_explanation=schools_data.get("explanation", "N/A"),
-                housing_price_per_square_foot=int(housing_data.get("housing_price_per_square_foot", 0)),
-                average_house_size_square_foot=int(housing_data.get("average_house_size_square_foot", 0)),
-                session_id=msg.session_id
-            )
-
+            response_text = await _query_community_model(msg.location_name)
+            
+            # Parse and process the JSON response
+            response_data = _clean_json_response(response_text)
+            response = _build_response_data(response_data, msg.location_name, msg.session_id)
+            
             await ctx.send(sender, response)
 
-        except json.JSONDecodeError as e:
-            ctx.logger.exception(f'Error parsing JSON response: {e}')
-            response = CommunityAnalysisResponse(
-                location=msg.location_name,
-                overall_score=0.0,
-                overall_explanation="Error parsing response",
-                safety_score=0.0,
-                positive_stories=[],
-                negative_stories=[],
-                school_rating=0.0,
-                school_explanation="Error parsing response",
-                housing_price_per_square_foot=0,
-                average_house_size_square_foot=0,
-                session_id=msg.session_id
-            )
+        except json.JSONDecodeError:
+            response = _create_error_response(msg.location_name, msg.session_id, "parsing JSON response")
             await ctx.send(sender, response)
 
-        except Exception as e:
-            ctx.logger.exception(f'Error querying model: {e}')
-            response = CommunityAnalysisResponse(
-                location=msg.location_name,
-                overall_score=0.0,
-                overall_explanation="Error querying model",
-                safety_score=0.0,
-                positive_stories=[],
-                negative_stories=[],
-                school_rating=0.0,
-                school_explanation="Error querying model",
-                housing_price_per_square_foot=0,
-                average_house_size_square_foot=0,
-                session_id=msg.session_id
-            )
+        except Exception:
+            response = _create_error_response(msg.location_name, msg.session_id, "querying model")
             await ctx.send(sender, response)
 
     return agent
