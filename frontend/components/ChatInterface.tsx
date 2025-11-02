@@ -428,52 +428,82 @@ export default function ChatInterface({ onPropertiesFound, onTopResultCoordinate
                         : 'border-slate-600/30 hover:border-slate-500/50'
                     }`}
                   >
-                    {listing.image_url && (
-                      <div className="w-full h-48 bg-slate-700 relative overflow-hidden">
-                        <img
-                          src={listing.image_url}
-                          alt={listing.title || 'Propriedade'}
-                          className="w-full h-full object-cover"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none';
-                          }}
-                        />
-                      </div>
-                    )}
-                    {!listing.image_url && (
-                      <div className="w-full h-48 bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center">
-                        <svg className="w-16 h-16 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-                        </svg>
-                      </div>
-                    )}
+                    {(() => {
+                      // Get image URL from listing (check images array first, then image_url)
+                      const imageUrl = listing.images && listing.images.length > 0 && listing.images[0]
+                        ? listing.images[0]
+                        : listing.image_url;
+
+                      return imageUrl ? (
+                        <div className="w-full h-48 bg-slate-700 relative overflow-hidden">
+                          <img
+                            src={imageUrl}
+                            alt={listing.title || 'Propriedade'}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).style.display = 'none';
+                            }}
+                          />
+                        </div>
+                      ) : (
+                        <div className="w-full h-48 bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center">
+                          <svg className="w-16 h-16 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+                          </svg>
+                        </div>
+                      );
+                    })()}
                     <div className="p-4">
                       <h3 className="text-base font-bold text-white mb-2 line-clamp-2">
                         {listing.title || listing.address || `Listagem ${index + 1}`}
                       </h3>
                       {listing.price && (
                         <p className="text-lg text-green-400 font-bold mb-2">
-                          €{typeof listing.price === 'number' ? listing.price.toLocaleString() : listing.price}
-                          {listing.price_type === 'monthly' ? '/mês' : ''}
+                          €{typeof listing.price === 'object' ? (listing.price.amount?.toLocaleString() || 'N/A') : (typeof listing.price === 'number' ? listing.price.toLocaleString() : listing.price)}
+                          {(listing.price?.is_rent || listing.price_type === 'monthly') ? '/mês' : ''}
                         </p>
                       )}
-                      <div className="flex flex-wrap gap-3 text-sm text-slate-300 mb-3">
+                      {/* Property Type Badge */}
+                      {listing.property_type && (
+                        <div className="mb-2">
+                          <span className="bg-blue-500/20 text-blue-300 text-xs px-2 py-1 rounded-full border border-blue-500/30">
+                            {listing.property_type}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Property Details Grid */}
+                      <div className="grid grid-cols-2 gap-2 mb-3">
                         {listing.bedrooms && (
-                          <div className="flex items-center gap-1">
-                            <span>🛏️</span>
-                            <span>{listing.bedrooms} quartos</span>
+                          <div className="bg-slate-800/30 rounded-lg px-2 py-1.5 border border-slate-700/30">
+                            <div className="text-xs text-slate-400">Quartos</div>
+                            <div className="text-sm text-white font-semibold flex items-center gap-1">
+                              <span>🛏️</span> {listing.bedrooms}
+                            </div>
                           </div>
                         )}
                         {listing.bathrooms && (
-                          <div className="flex items-center gap-1">
-                            <span>🚿</span>
-                            <span>{listing.bathrooms} casas de banho</span>
+                          <div className="bg-slate-800/30 rounded-lg px-2 py-1.5 border border-slate-700/30">
+                            <div className="text-xs text-slate-400">WC</div>
+                            <div className="text-sm text-white font-semibold flex items-center gap-1">
+                              <span>🚿</span> {listing.bathrooms}
+                            </div>
                           </div>
                         )}
-                        {listing.sqft && (
-                          <div className="flex items-center gap-1">
-                            <span>📏</span>
-                            <span>{listing.sqft}m²</span>
+                        {(listing.area_m2 || listing.sqft) && (
+                          <div className="bg-slate-800/30 rounded-lg px-2 py-1.5 border border-slate-700/30">
+                            <div className="text-xs text-slate-400">Área</div>
+                            <div className="text-sm text-white font-semibold flex items-center gap-1">
+                              <span>📏</span> {listing.area_m2 || listing.sqft}m²
+                            </div>
+                          </div>
+                        )}
+                        {listing.property_details?.area_m2 && (
+                          <div className="bg-slate-800/30 rounded-lg px-2 py-1.5 border border-slate-700/30">
+                            <div className="text-xs text-slate-400">Área</div>
+                            <div className="text-sm text-white font-semibold flex items-center gap-1">
+                              <span>📏</span> {listing.property_details.area_m2}m²
+                            </div>
                           </div>
                         )}
                       </div>
@@ -482,6 +512,18 @@ export default function ChatInterface({ onPropertiesFound, onTopResultCoordinate
                           <span className="flex-shrink-0">📍</span>
                           <span className="line-clamp-2">{listing.address}</span>
                         </div>
+                      )}
+                      {listing.link && (
+                        <a
+                          href={listing.link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-400 hover:text-blue-300 mb-2 flex items-center gap-1 hover:underline"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <span>🔗</span>
+                          <span className="line-clamp-1">Ver anúncio original</span>
+                        </a>
                       )}
                       {listing.description && (
                         <p className="text-xs text-slate-400 line-clamp-3 mb-3">
@@ -572,33 +614,39 @@ export default function ChatInterface({ onPropertiesFound, onTopResultCoordinate
                     : 'border-slate-600/30 hover:border-slate-500/50'
                 }`}
               >
-                {listing.image_url && (
-                  <div className="w-full h-32 bg-slate-700 relative overflow-hidden">
-                    <img
-                      src={listing.image_url}
-                      alt={listing.title || 'Propriedade'}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'none';
-                      }}
-                    />
-                  </div>
-                )}
-                {!listing.image_url && (
-                  <div className="w-full h-32 bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center">
-                    <svg className="w-12 h-12 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-                    </svg>
-                  </div>
-                )}
+                {(() => {
+                  // Get image URL from listing (check images array first, then image_url)
+                  const imageUrl = listing.images && listing.images.length > 0 && listing.images[0]
+                    ? listing.images[0]
+                    : listing.image_url;
+
+                  return imageUrl ? (
+                    <div className="w-full h-32 bg-slate-700 relative overflow-hidden">
+                      <img
+                        src={imageUrl}
+                        alt={listing.title || 'Propriedade'}
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="w-full h-32 bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center">
+                      <svg className="w-12 h-12 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+                      </svg>
+                    </div>
+                  );
+                })()}
                 <div className="p-3">
                   <h3 className="text-sm font-semibold text-white truncate mb-1">
                     {listing.title || listing.address || `Listagem ${index + 1}`}
                   </h3>
                   {listing.price && (
                     <p className="text-xs text-green-400 font-bold mb-1">
-                      €{typeof listing.price === 'number' ? listing.price.toLocaleString() : listing.price}
-                      {listing.price_type === 'monthly' ? '/mês' : ''}
+                      €{typeof listing.price === 'object' ? (listing.price.amount?.toLocaleString() || 'N/A') : (typeof listing.price === 'number' ? listing.price.toLocaleString() : listing.price)}
+                      {(listing.price?.is_rent || listing.price_type === 'monthly') ? '/mês' : ''}
                     </p>
                   )}
                   <div className="flex gap-2 text-xs text-slate-400">
@@ -614,6 +662,18 @@ export default function ChatInterface({ onPropertiesFound, onTopResultCoordinate
                     <div className="mt-1 text-xs text-slate-500 truncate">
                       📍 {listing.address}
                     </div>
+                  )}
+                  {listing.link && (
+                    <a
+                      href={listing.link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <span>🔗</span>
+                      <span className="truncate">Ver original</span>
+                    </a>
                   )}
                 </div>
               </div>

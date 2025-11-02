@@ -493,17 +493,23 @@ export default function MapView({ selectedProperty, allProperties, topResultCoor
         <div key={`listing-${currentListingIndex}-${topResultDetails?.title || ''}`} className="absolute top-[100px] bottom-4 right-4 w-80 overflow-hidden">
           <div className="h-full overflow-y-auto bg-slate-900/95 backdrop-blur-xl border-2 border-green-500/40 rounded-xl shadow-2xl overflow-hidden">
             {/* Property Image */}
-            {topResultCoords.image_url && (
-              <div className="relative">
-                <img
-                  key={`img-${currentListingIndex}`}
-                  src={topResultCoords.image_url}
-                  alt="Property"
-                  className="w-full h-48 object-cover"
-                  onError={(e) => {
-                    e.currentTarget.style.display = 'none';
-                  }}
-                />
+            {(() => {
+              // Get image URL from topResultDetails (check images array first, then topResultCoords.image_url)
+              const imageUrl = topResultDetails?.images && topResultDetails.images.length > 0 && topResultDetails.images[0]
+                ? topResultDetails.images[0]
+                : topResultCoords.image_url;
+
+              return imageUrl ? (
+                <div className="relative">
+                  <img
+                    key={`img-${currentListingIndex}`}
+                    src={imageUrl}
+                    alt="Property"
+                    className="w-full h-48 object-cover"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                    }}
+                  />
                 <div className="absolute top-3 left-3">
                   <div className="bg-green-500 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5">
                     <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
@@ -516,7 +522,14 @@ export default function MapView({ selectedProperty, allProperties, topResultCoor
                   </div>
                 </div>
               </div>
-            )}
+            ) : (
+              <div className="w-full h-48 bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center">
+                <svg className="w-16 h-16 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+                </svg>
+              </div>
+            );
+            })()}
 
             {/* Property Details */}
             <div className="p-4 space-y-3">
@@ -545,25 +558,31 @@ export default function MapView({ selectedProperty, allProperties, topResultCoor
                   <p className="text-gray-400 text-xs">Price</p>
                   <p className="text-green-400 font-bold text-sm mt-0.5">
                     {(() => {
-                      // Try to extract price from title or description
-                      const text = `${topResultDetails.title || ''} ${topResultDetails.description || ''}`;
-
-                      // Match patterns like $1,200,000 or $1.2M or $2,500/mo
-                      const priceMatch = text.match(/\$[\d,]+(?:\.[\d]+)?[KMB]?(?:\/mo)?/i);
-                      if (priceMatch) {
-                        const price = priceMatch[0];
-                        // Check if it's a rental (contains /mo or /month)
-                        const isRental = /\/mo/i.test(price);
-                        return price;
+                      // First check if we have a price object with amount
+                      if (topResultDetails.price && typeof topResultDetails.price === 'object' && topResultDetails.price.amount) {
+                        const amount = topResultDetails.price.amount.toLocaleString();
+                        const isRent = topResultDetails.price.is_rent;
+                        return `€${amount}${isRent ? '/mês' : ''}`;
                       }
 
-                      // Fallback: Try to find any dollar amount
-                      const dollarMatch = text.match(/\$[\d,]+/);
+                      // If price is a number
+                      if (typeof topResultDetails.price === 'number') {
+                        return `€${topResultDetails.price.toLocaleString()}`;
+                      }
+
+                      // Fallback: Try to extract price from title or description
+                      const text = `${topResultDetails.title || ''} ${topResultDetails.description || ''}`;
+                      const euroMatch = text.match(/€[\d,]+(?:\.[\d]+)?[KMB]?(?:\/m[eê]s)?/i);
+                      if (euroMatch) {
+                        return euroMatch[0];
+                      }
+
+                      const dollarMatch = text.match(/\$[\d,]+(?:\.[\d]+)?[KMB]?(?:\/mo)?/i);
                       if (dollarMatch) {
                         return dollarMatch[0];
                       }
 
-                      return 'Call for Price';
+                      return 'Consultar';
                     })()}
                   </p>
                 </div>
@@ -572,7 +591,7 @@ export default function MapView({ selectedProperty, allProperties, topResultCoor
               {/* Action Buttons */}
               <div className="space-y-2">
                 <a
-                  href={topResultDetails?.link || '#'}
+                  href={topResultDetails?.url || topResultDetails?.link || '#'}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="block w-full bg-gradient-to-r from-green-600 to-green-700 text-white py-3 px-4 rounded-lg text-sm font-semibold hover:from-green-700 hover:to-green-800 transition-all text-center"

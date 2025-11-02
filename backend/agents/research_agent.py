@@ -10,6 +10,7 @@ from utils.scraper import (
     filter_rental_properties,
     format_property_json,
     extract_property_from_casa_sapo_html,
+    extract_property_from_idealista_detail,
     is_individual_listing_url,
 )
 from utils.firecrawl_scraper import get_firecrawl_scraper
@@ -391,8 +392,14 @@ async def scrape_property_details(
                     pass
             
             # Extract full property details using utils
-            if detail_html and 'casa.sapo.pt' in prop_url:
-                full_prop_data = extract_property_from_casa_sapo_html(detail_html, prop_url)
+            if detail_html:
+                full_prop_data = None
+
+                if 'casa.sapo.pt' in prop_url:
+                    full_prop_data = extract_property_from_casa_sapo_html(detail_html, prop_url)
+                elif 'idealista.pt' in prop_url:
+                    full_prop_data = extract_property_from_idealista_detail(detail_html, prop_url)
+
                 if full_prop_data:
                     # Merge with listing data
                     prop_data.update(full_prop_data)

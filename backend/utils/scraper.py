@@ -496,6 +496,118 @@ def extract_properties_from_casa_sapo_listing(html_content: str, base_url: str) 
         return []
 
 
+def extract_property_from_idealista_detail(html_content: str, url: str) -> Optional[Dict]:
+    """
+    Extract detailed property data from an individual Idealista property page.
+    Returns dict with full property details including address, images, description, etc.
+    """
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        property_data = {'url': url}
+
+        # Extract title
+        title_elem = soup.find('h1', class_=re.compile(r'main-info__title', re.I))
+        if title_elem:
+            property_data['title'] = title_elem.get_text(strip=True)
+
+        # Extract address/location - Idealista shows it in specific elements
+        location_elem = soup.find(['span', 'p'], class_=re.compile(r'main-info__title-minor', re.I))
+        if not location_elem:
+            location_elem = soup.find(['span', 'p'], attrs={'id': re.compile(r'addressLocalityInfo', re.I)})
+
+        if location_elem:
+            location_text = location_elem.get_text(strip=True)
+            property_data['location'] = location_text
+
+            # Parse address components: "Neighborhood, City" or "Street, Neighborhood, City"
+            parts = [p.strip() for p in location_text.split(',')]
+            if len(parts) >= 2:
+                if len(parts) == 2:
+                    property_data['neighborhood'] = parts[0]
+                    property_data['city'] = parts[1]
+                elif len(parts) >= 3:
+                    property_data['street'] = parts[0]
+                    property_data['neighborhood'] = parts[1]
+                    property_data['city'] = parts[2]
+
+        # Extract price
+        price_elem = soup.find(['span'], class_=re.compile(r'info-data-price', re.I))
+        if price_elem:
+            price_text = price_elem.get_text(strip=True)
+            price_match = re.search(r'([\d.]+)', price_text.replace('.', ''))
+            if price_match:
+                try:
+                    property_data['price'] = int(price_match.group(1))
+                    property_data['is_rent'] = '/arrendar' in url or '/alugar' in url
+                    property_data['price_type'] = 'alugar' if property_data['is_rent'] else 'comprar'
+                except:
+                    pass
+
+        # Extract property type and details (bedrooms, bathrooms, area)
+        details_list = soup.find_all(['div', 'span'], class_=re.compile(r'info-features|details-property_features', re.I))
+        for detail in details_list:
+            detail_text = detail.get_text(strip=True).lower()
+
+            # Bedrooms (quartos or hab.)
+            if 'quarto' in detail_text or 'hab.' in detail_text:
+                bed_match = re.search(r'(\d+)', detail_text)
+                if bed_match:
+                    property_data['bedrooms'] = int(bed_match.group(1))
+
+            # Bathrooms (casas de banho or wc)
+            if 'banho' in detail_text or 'wc' in detail_text:
+                bath_match = re.search(r'(\d+)', detail_text)
+                if bath_match:
+                    property_data['bathrooms'] = int(bath_match.group(1))
+
+            # Area (m²)
+            if 'm²' in detail_text or 'm2' in detail_text:
+                area_match = re.search(r'(\d+)', detail_text.replace('.', '').replace(',', ''))
+                if area_match:
+                    property_data['area_m2'] = int(area_match.group(1))
+                    property_data['sqft'] = int(int(area_match.group(1)) * 10.764)  # Convert to sqft
+
+        # Extract description
+        desc_elem = soup.find(['div', 'p'], class_=re.compile(r'comment|description', re.I))
+        if desc_elem:
+            property_data['description'] = desc_elem.get_text(strip=True)
+
+        # Extract images - Idealista shows multiple images
+        images = []
+        img_elements = soup.find_all('img', class_=re.compile(r'detail-image|carousel', re.I))
+        if not img_elements:
+            # Try alternative selectors
+            img_elements = soup.find_all('img', attrs={'data-ondemand-img': True})
+
+        for img in img_elements[:10]:  # Limit to 10 images
+            img_url = img.get('src') or img.get('data-src') or img.get('data-ondemand-img')
+            if img_url and img_url.startswith('http'):
+                images.append(img_url)
+
+        if images:
+            property_data['images'] = images
+            property_data['image_url'] = images[0]  # First image as main
+
+        # Extract property type from title or features
+        if 'title' in property_data:
+            title_lower = property_data['title'].lower()
+            if 'apartamento' in title_lower or 't0' in title_lower or 't1' in title_lower or 't2' in title_lower or 't3' in title_lower or 't4' in title_lower:
+                property_data['property_type'] = 'Apartamento'
+                # Extract T-number for bedrooms if not already found
+                if 'bedrooms' not in property_data:
+                    t_match = re.search(r't(\d+)', title_lower)
+                    if t_match:
+                        property_data['bedrooms'] = int(t_match.group(1))
+            elif 'moradia' in title_lower or 'casa' in title_lower:
+                property_data['property_type'] = 'Moradia'
+
+        return property_data if property_data.get('price') or property_data.get('title') else None
+
+    except Exception as e:
+        print(f"[Idealista Detail Scraper Error] {e}")
+        return None
+
+
 def extract_properties_from_idealista_listing(html_content: str, base_url: str) -> List[Dict]:
     """
     Extract multiple properties from an Idealista listing page.
