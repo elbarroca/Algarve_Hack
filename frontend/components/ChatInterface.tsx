@@ -34,6 +34,9 @@ const PRESET_SEARCHES = [
   }
 ];
 
+// Shared location keywords for both preset and text queries
+const LOCATION_KEYWORDS = ['Faro', 'Loulé', 'Portimão', 'Lagos', 'Tavira', 'Olhão', 'Albufeira', 'Alvor', 'Praia da Rocha', 'Quarteira', 'Vilamoura', 'Armação de Pêra', 'Carvoeiro', 'Ferragudo', 'Silves'];
+
 export default function ChatInterface({ onPropertiesFound, onTopResultCoordinates, onRawSearchResults, onCommunityAnalysis, sessionId, onListingSelect, currentListingIndex = 0, onTopResultDetails }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([
     { id: Date.now(), role: 'agent', content: 'Olá! Posso ajudá-lo a encontrar uma casa no Algarve. Que tipo de propriedade procura?' }
@@ -61,8 +64,7 @@ export default function ChatInterface({ onPropertiesFound, onTopResultCoordinate
     setMessages(prev => [...prev, userMsg]);
 
     // Extract location from the preset message
-    const locationKeywords = ['Faro', 'Loulé', 'Portimão', 'Lagos', 'Tavira', 'Olhão', 'Albufeira'];
-    const detectedLocation = locationKeywords.find(loc =>
+    const detectedLocation = LOCATION_KEYWORDS.find(loc =>
       message.toLowerCase().includes(loc.toLowerCase())
     );
     if (detectedLocation) {
@@ -155,11 +157,29 @@ export default function ChatInterface({ onPropertiesFound, onTopResultCoordinate
         setMessages(prev => [...prev, agentMsg]);
 
         // Store ALL raw search results in parent with location filtering
-        if (raw_search_results && raw_search_results.length > 0 && onRawSearchResults) {
+        let filteredResults: any[] = [];
+        
+        if (raw_search_results && raw_search_results.length > 0) {
           console.log('[ChatInterface] Storing raw search results:', raw_search_results.length);
 
-          // Filter results by location
-          const filteredResults = raw_search_results.filter((result: any) => {
+          // Filter results by location - be lenient, include ALL properties with valid coordinates
+          // The backend already filtered by location, so trust it and just filter out invalid coordinates
+          filteredResults = raw_search_results.filter((result: any) => {
+            // First check: Must have valid coordinates (check both root level and location object)
+            const lat = result.latitude || result.location?.latitude;
+            const lon = result.longitude || result.location?.longitude;
+            
+            if (!lat || !lon) {
+              return false; // No coordinates, can't display on map
+            }
+            
+            // Ensure coordinates are valid numbers
+            if (typeof lat !== 'number' || typeof lon !== 'number' || isNaN(lat) || isNaN(lon)) {
+              console.warn('[ChatInterface] Invalid coordinates for property:', result.address || result.title, lat, lon);
+              return false;
+            }
+
+            // Second check: Address should match location (lenient matching)
             const address = (result.address || result.title || '').toLowerCase();
             const location = searchLocation.toLowerCase();
 
@@ -168,43 +188,54 @@ export default function ChatInterface({ onPropertiesFound, onTopResultCoordinate
               ? result.location
               : (result.location?.full_address || result.location?.city || result.location?.address || '');
 
-            // Check address/title contains location name
-            const addressMatch = address.includes(location) || locationStr.toLowerCase().includes(location);
+            // Check address/title contains location name (handle accent variations)
+            const normalizeText = (text: string) => text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+            const normalizedAddress = normalizeText(address);
+            const normalizedLocationStr = normalizeText(locationStr);
+            const addressMatch = normalizedAddress.includes(normalizeText(location)) || 
+                                normalizedLocationStr.includes(normalizeText(location));
 
-            // Coordinate-based filtering for Faro region (approximately 37.0, -7.9)
-            if (searchLocation.toLowerCase() === 'faro' && result.latitude && result.longitude) {
-              // Faro is around 37.0, -7.9, exclude results too far away (like Braga at 41.5, -8.1)
-              const latDiff = Math.abs(result.latitude - 37.0);
-              const lonDiff = Math.abs(result.longitude - (-7.9));
-              // Only include if within ~0.5 degree (approximately 50km) OR address matches
-              const inFaroRegion = latDiff < 0.5 && lonDiff < 0.5;
-              return addressMatch || inFaroRegion;
+            // If address matches, include it
+            if (addressMatch) {
+              return true;
             }
 
-            // For other locations with coordinates, check proximity
-            if (result.latitude && result.longitude) {
-              // Define location centers (approximate)
+            // Coordinate-based filtering for different Algarve locations (only if address doesn't match)
+            // lat/lon already extracted above
+            if (lat && lon && typeof lat === 'number' && typeof lon === 'number') {
+              // Define location centers with more precise coordinates
               const locationCenters: Record<string, [number, number]> = {
                 'faro': [37.0194, -7.9322],
                 'loulé': [37.1377, -8.0244],
                 'portimão': [37.1366, -8.5337],
+                'portimao': [37.1366, -8.5337], // handle accent variations
                 'lagos': [37.1020, -8.6758],
                 'tavira': [37.1266, -7.6486],
                 'olhão': [37.0261, -7.8411],
                 'albufeira': [37.0889, -8.2503],
+                'alvor': [37.1296, -8.5939],
+                'praia da rocha': [37.1207, -8.5431],
+                'quarteira': [37.0649, -8.1079],
+                'vilamoura': [37.0867, -8.1139],
+                'armação de pêra': [37.1057, -8.2963],
+                'carvoeiro': [37.1297, -8.4773],
+                'ferragudo': [37.1229, -8.5159],
+                'silves': [37.1403, -8.4373],
               };
 
               const center = locationCenters[location];
               if (center) {
-                const latDiff = Math.abs(result.latitude - center[0]);
-                const lonDiff = Math.abs(result.longitude - center[1]);
-                const inRegion = latDiff < 0.5 && lonDiff < 0.5;
-                return addressMatch || inRegion;
+                const latDiff = Math.abs(lat - center[0]);
+                const lonDiff = Math.abs(lon - center[1]);
+                // Use moderate radius (0.4 degrees ≈ 40km) for accurate filtering
+                const inRegion = latDiff < 0.4 && lonDiff < 0.4;
+                return inRegion;
               }
             }
 
-            // For locations without coordinates or no match, rely on address match
-            return addressMatch;
+            // If we have valid coordinates but no location match, still include it (backend already filtered)
+            // This ensures all properties from backend are displayed
+            return lat && lon && typeof lat === 'number' && typeof lon === 'number' && !isNaN(lat) && !isNaN(lon);
           });
 
           console.log(`[ChatInterface] Filtered ${filteredResults.length} results for location: ${searchLocation} (from ${raw_search_results.length} total)`);
@@ -213,7 +244,9 @@ export default function ChatInterface({ onPropertiesFound, onTopResultCoordinate
           setRawSearchResults(filteredResults);
 
           // Pass to parent
-          onRawSearchResults(filteredResults);
+          if (onRawSearchResults) {
+            onRawSearchResults(filteredResults);
+          }
         }
 
         // If top result coordinates found, pass to parent
@@ -228,17 +261,35 @@ export default function ChatInterface({ onPropertiesFound, onTopResultCoordinate
           onCommunityAnalysis(community_analysis);
         }
 
-        // Use individual property data if available, otherwise fall back to generic properties
-        const propertyData = formatted_properties_json || properties;
+        // Use filteredResults if available (already filtered and validated), otherwise fall back
+        // The filteredResults are the same enhanced properties passed to onRawSearchResults
+        // If no filtering happened, use raw_search_results directly
+        const propertyData = filteredResults && filteredResults.length > 0
+          ? filteredResults
+          : (raw_search_results && raw_search_results.length > 0 
+            ? raw_search_results 
+            : (formatted_properties_json || properties));
+        
         console.log('[ChatInterface] Using property data:', {
+          filtered_results: filteredResults?.length || 0,
+          raw_search_results: raw_search_results?.length || 0,
           individual_properties: formatted_properties_json?.length || 0,
           generic_properties: properties?.length || 0,
-          using_individual: !!formatted_properties_json
+          using_filtered: !!(filteredResults && filteredResults.length > 0),
+          final_count: propertyData?.length || 0
         });
 
-        // If properties found, pass to map - prefer individual property data
+        // If properties found, pass to map - use filtered results (same as rawSearchResults)
         if (propertyData && propertyData.length > 0 && onPropertiesFound) {
+          console.log('[ChatInterface] Passing', propertyData.length, 'properties to map');
           onPropertiesFound(propertyData);
+        } else {
+          console.warn('[ChatInterface] No properties to pass to map!', {
+            filteredResults: filteredResults?.length,
+            raw_search_results: raw_search_results?.length,
+            formatted_properties_json: formatted_properties_json?.length,
+            properties: properties?.length
+          });
         }
 
       } else if (data.status === 'error') {
@@ -274,6 +325,14 @@ export default function ChatInterface({ onPropertiesFound, onTopResultCoordinate
 
     const userMsg: Message = { id: Date.now(), role: 'user', content: input.trim() };
     setMessages(prev => [...prev, userMsg]);
+
+    // Extract location from the input message
+    const detectedLocation = LOCATION_KEYWORDS.find(loc =>
+      input.toLowerCase().includes(loc.toLowerCase())
+    );
+    if (detectedLocation) {
+      setSearchLocation(detectedLocation);
+    }
 
     await sendMessageToAPI(input.trim());
   };

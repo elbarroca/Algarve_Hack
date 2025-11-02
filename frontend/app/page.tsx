@@ -16,53 +16,106 @@ export default function Home() {
   const [communityAnalysis, setCommunityAnalysis] = useState<any>(null);
 
   const handlePropertiesFound = (newProperties: any[]) => {
+    console.log('[Home] Received properties:', newProperties.length);
+    console.log('[Home] Sample property:', newProperties[0]);
+    
     // Convert backend properties to frontend Property format
-    const geoReady = newProperties.filter(
-      (prop) => typeof prop.latitude === 'number' && typeof prop.longitude === 'number'
+    // Extract coordinates from location object if needed
+    const geoReady = newProperties.map((prop, idx) => {
+      // Extract coordinates - check multiple locations
+      let lat = prop.latitude;
+      let lon = prop.longitude;
+      
+      if (!lat || !lon) {
+        const location = prop.location;
+        if (location && typeof location === 'object') {
+          lat = location.latitude;
+          lon = location.longitude;
+        }
+      }
+      
+      // Return with coordinates normalized to root level
+      return {
+        ...prop,
+        latitude: lat,
+        longitude: lon,
+        _originalIndex: idx
+      };
+    }).filter(
+      (prop) => {
+        const hasCoords = typeof prop.latitude === 'number' && typeof prop.longitude === 'number' && 
+                         !isNaN(prop.latitude) && !isNaN(prop.longitude);
+        if (!hasCoords) {
+          console.warn('[Home] Property missing coordinates:', prop.address || prop.title, prop);
+        }
+        return hasCoords;
+      }
     );
 
-    const convertedProperties: Property[] = geoReady.map((prop, idx) => ({
-      id: idx + 1000,
-      address: prop.address || prop.title || 'Unknown Address',
-      city: prop.location || 'Faro',
-      state: 'Algarve',
-      price: typeof prop.price === 'object' ? (prop.price?.amount || 0) : (prop.price || 0),
-      bedrooms: prop.bedrooms || 0,
-      bathrooms: prop.bathrooms || 0,
-      sqft: 0,
-      latitude: prop.latitude,
-      longitude: prop.longitude,
-      description: prop.description || '',
-      imageUrl: '/properties/default.jpg',
-      propertyType: 'Single Family'
-    }));
+    console.log('[Home] Properties with valid coordinates:', geoReady.length);
+    console.log('[Home] Properties with POIs:', geoReady.filter(p => p.pois && p.pois.length > 0).length);
 
+    const convertedProperties: Property[] = geoReady.map((prop, idx) => {
+      const location = prop.location || {};
+      const locationStr = typeof location === 'string' ? location : (location.full_address || location.city || location.address || '');
+      
+      return {
+        id: prop._originalIndex !== undefined ? prop._originalIndex + 1000 : idx + 1000,
+        address: prop.address || prop.title || locationStr || 'Unknown Address',
+        city: typeof location === 'string' ? location : (location.city || 'Faro'),
+        state: 'Algarve',
+        price: typeof prop.price === 'object' ? (prop.price?.amount || 0) : (prop.price || 0),
+        bedrooms: prop.bedrooms || 0,
+        bathrooms: prop.bathrooms || 0,
+        sqft: prop.area_m2 || prop.sqft || 0,
+        latitude: prop.latitude,
+        longitude: prop.longitude,
+        description: prop.description || '',
+        imageUrl: prop.image_url || prop.images?.[0] || '/properties/default.jpg',
+        propertyType: prop.property_type || 'Single Family'
+      };
+    });
+
+    console.log('[Home] Converted properties for map:', convertedProperties.length);
+    console.log('[Home] First property sample:', {
+      id: convertedProperties[0]?.id,
+      address: convertedProperties[0]?.address,
+      lat: convertedProperties[0]?.latitude,
+      lon: convertedProperties[0]?.longitude
+    });
+    
     // Set converted properties (no mock data fallback)
     setProperties(convertedProperties);
   };
 
   const handleRawSearchResults = (results: any[]) => {
     console.log('[Home] Storing raw search results:', results.length);
-    console.log('[Home] Raw results with POIs:', results);
+    console.log('[Home] Raw results with POIs:', results.map(r => ({ 
+      address: r.address || r.location?.full_address,
+      pois: r.pois?.length || 0,
+      lat: r.latitude || r.location?.latitude,
+      lon: r.longitude || r.location?.longitude
+    })));
 
-    // Limit to 10 listings max for display
-    const limitedResults = results.slice(0, 10);
-    setRawSearchResults(limitedResults);
+    // Don't limit - show all results from backend (they're already filtered)
+    setRawSearchResults(results);
     setCurrentListingIndex(0); // Reset to first listing
 
     // Extract top result details and coordinates
-    if (limitedResults.length > 0) {
-      const topResult = limitedResults[0];
+    if (results.length > 0) {
+      const topResult = results[0];
       console.log('[Home] Top result details:', topResult);
       console.log('[Home] Top result POIs:', topResult.pois);
       setTopResultDetails(topResult);
       
       // Update top result coordinates if available
-      if (topResult.latitude && topResult.longitude) {
+      const lat = topResult.latitude || topResult.location?.latitude;
+      const lon = topResult.longitude || topResult.location?.longitude;
+      if (lat && lon) {
         setTopResultCoords({
-          latitude: topResult.latitude,
-          longitude: topResult.longitude,
-          address: topResult.address || topResult.title || 'Unknown Address',
+          latitude: lat,
+          longitude: lon,
+          address: topResult.address || topResult.title || topResult.location?.full_address || 'Unknown Address',
           image_url: topResult.image_url
         });
       }
@@ -84,11 +137,13 @@ export default function Home() {
     });
 
     // Update coordinates
-    if (nextListing.latitude && nextListing.longitude) {
+    const lat = nextListing.latitude || nextListing.location?.latitude;
+    const lon = nextListing.longitude || nextListing.location?.longitude;
+    if (lat && lon) {
       setTopResultCoords({
-        latitude: nextListing.latitude,
-        longitude: nextListing.longitude,
-        address: nextListing.address || nextListing.title || 'Unknown Address',
+        latitude: lat,
+        longitude: lon,
+        address: nextListing.address || nextListing.title || nextListing.location?.full_address || 'Unknown Address',
         image_url: nextListing.image_url
       });
     }

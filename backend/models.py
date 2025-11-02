@@ -105,6 +105,7 @@ class MapboxRequest(Model):
     """Request to Mapbox agent to geocode address"""
     address: str
     session_id: str
+    context_location: Optional[str] = None  # Original search location for disambiguation
 
 
 class MapboxResponse(Model):

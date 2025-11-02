@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Map, { Marker, Popup, Source, Layer } from 'react-map-gl/mapbox';
 import { Property } from '@/lib/mockData';
 import NeighborhoodStats from './NeighborhoodStats';
@@ -99,15 +99,34 @@ export default function MapView({ selectedProperty, allProperties, topResultCoor
 
   const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_API_KEY || 'pk.eyJ1Ijoic3RldmVkdXN0eSIsImEiOiJjbWd4am05Z2IxZXhyMmtwdTg1cnU4cmYxIn0.zpfFRf-6xH6ivorwg_ZJ3w';
 
-  // Extract current listing's POIs
-  const currentPOIs = topResultDetails?.pois || [];
+  // Extract current listing's POIs from rawSearchResults if available
+  const currentPOIs = useMemo(() => {
+    // First try to get POIs from topResultDetails
+    if (topResultDetails?.pois && Array.isArray(topResultDetails.pois) && topResultDetails.pois.length > 0) {
+      console.log('[MapView] Using POIs from topResultDetails:', topResultDetails.pois.length);
+      return topResultDetails.pois;
+    }
+    // Fallback: get POIs from rawSearchResults based on currentListingIndex
+    if (rawSearchResults && typeof currentListingIndex === 'number' && rawSearchResults[currentListingIndex]) {
+      const currentListing = rawSearchResults[currentListingIndex];
+      const pois = currentListing?.pois || [];
+      console.log('[MapView] Using POIs from rawSearchResults[', currentListingIndex, ']:', pois.length);
+      return pois;
+    }
+    console.log('[MapView] No POIs found');
+    return [];
+  }, [topResultDetails, rawSearchResults, currentListingIndex]);
 
   // Debug: Log POI data
   useEffect(() => {
     console.log('[MapView] Current listing index:', currentListingIndex);
     console.log('[MapView] Top result details:', topResultDetails);
-    console.log('[MapView] Current POIs:', currentPOIs);
-  }, [currentListingIndex, topResultDetails]);
+    console.log('[MapView] Current POIs:', currentPOIs.length, currentPOIs);
+    console.log('[MapView] Raw search results:', rawSearchResults?.length);
+    console.log('[MapView] All properties:', allProperties.length);
+    console.log('[MapView] Properties with coordinates:', allProperties.filter(p => p.latitude && p.longitude).length);
+    console.log('[MapView] Top result coords:', topResultCoords);
+  }, [currentListingIndex, topResultDetails, currentPOIs, rawSearchResults, allProperties, topResultCoords]);
 
   useEffect(() => {
     if (selectedProperty && mapRef.current) {
@@ -333,30 +352,43 @@ export default function MapView({ selectedProperty, allProperties, topResultCoor
         )}
 
         {/* Show all properties as small markers */}
-        {allProperties.map((property) => (
-          <Marker
-            key={property.id}
-            longitude={property.longitude}
-            latitude={property.latitude}
-            anchor="bottom"
-          >
-            <div
-              className={`transition-all cursor-pointer ${
-                selectedProperty?.id === property.id
-                  ? 'scale-150'
-                  : 'scale-100 opacity-50 hover:opacity-100'
-              }`}
+        {allProperties
+          .filter(property => {
+            const hasCoords = property.latitude && property.longitude && 
+                             typeof property.latitude === 'number' && typeof property.longitude === 'number' &&
+                             !isNaN(property.latitude) && !isNaN(property.longitude);
+            if (!hasCoords) {
+              console.warn('[MapView] Skipping property without valid coordinates:', property.id, property.address);
+            }
+            return hasCoords;
+          })
+          .map((property, idx) => (
+            <Marker
+              key={`property-${property.id}-${idx}`}
+              longitude={property.longitude}
+              latitude={property.latitude}
+              anchor="bottom"
             >
               <div
-                className={`w-4 h-4 rounded-full border-2 ${
+                className={`transition-all cursor-pointer ${
                   selectedProperty?.id === property.id
-                    ? 'bg-blue-500 border-white shadow-lg shadow-blue-500/50 animate-pulse'
-                    : 'bg-blue-400 border-white'
+                    ? 'scale-150'
+                    : 'scale-100 opacity-50 hover:opacity-100'
                 }`}
-              />
-            </div>
-          </Marker>
-        ))}
+                onClick={() => {
+                  console.log('[MapView] Property marker clicked:', property);
+                }}
+              >
+                <div
+                  className={`w-4 h-4 rounded-full border-2 ${
+                    selectedProperty?.id === property.id
+                      ? 'bg-blue-500 border-white shadow-lg shadow-blue-500/50 animate-pulse'
+                      : 'bg-blue-400 border-white'
+                  }`}
+                />
+              </div>
+            </Marker>
+          ))}
 
         {/* POI Markers */}
         {currentPOIs.map((poi: any, idx: number) => {

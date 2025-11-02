@@ -199,18 +199,22 @@ def main():
             properties_to_geocode = msg.formatted_properties_json[:10]
             ctx.logger.info(f"Geocoding {len(properties_to_geocode)} properties with full addresses")
 
+            # Get original search location for context
+            original_location = sessions[msg.session_id].get("last_search_location", "")
+            
             for idx, prop in enumerate(properties_to_geocode):
                 # Extract full address from location data (formatted properties have detailed location info)
                 location = prop.get("location", {})
                 address = location.get("full_address") or location.get("address") or prop.get("address", "")
 
                 if address:
-                    ctx.logger.info(f"Geocoding property {idx + 1}: {address}")
+                    ctx.logger.info(f"Geocoding property {idx + 1}: {address} (context: {original_location})")
                     await ctx.send(
                         mapbox_address,
                         MapboxRequest(
                             address=address,
-                            session_id=f"{msg.session_id}__{idx}"  # Unique ID per result
+                            session_id=f"{msg.session_id}__{idx}",  # Unique ID per result
+                            context_location=original_location  # Pass context for disambiguation
                         )
                     )
         else:
@@ -235,6 +239,24 @@ def main():
             # Store this geocoded result
             if not msg.error:
                 ctx.logger.info(f"Geocoded result {idx + 1}: {msg.address} -> ({msg.latitude}, {msg.longitude})")
+                
+                # Validate coordinates are in expected region if we have context
+                base_session_id_check = base_session_id if "__" in msg.session_id else msg.session_id
+                original_location = sessions.get(base_session_id_check, {}).get("last_search_location", "")
+                if original_location:
+                    # Check if coordinates match expected region
+                    region_hint = None
+                    location_lower = original_location.lower()
+                    if any(city in location_lower for city in ["portimão", "portimao", "faro", "lagos", "alvor"]):
+                        region_hint = "Algarve"
+                    
+                    if region_hint:
+                        from agents.mapbox_agent import _is_valid_portugal_location
+                        if not _is_valid_portugal_location(msg.latitude, msg.longitude, region_hint):
+                            ctx.logger.warning(f"❌ Geocoded result {idx + 1} is outside expected region: {msg.address} -> ({msg.latitude}, {msg.longitude})")
+                            # Still store it but mark as potentially incorrect
+                            ctx.logger.warning(f"   Expected region: {region_hint}, but got coordinates outside bounds")
+                
                 sessions[base_session_id]["geocoded_results"].append({
                     "index": idx,
                     "latitude": msg.latitude,
@@ -448,14 +470,55 @@ def main():
                         geocoded = next((g for g in geocoded_results if g["index"] == idx), None)
 
                         if geocoded:
-                            # Add coordinates to the property
-                            enhanced_prop["latitude"] = geocoded["latitude"]
-                            enhanced_prop["longitude"] = geocoded["longitude"]
-                            # Also update location object if it exists
-                            if "location" not in enhanced_prop:
-                                enhanced_prop["location"] = {}
-                            enhanced_prop["location"]["latitude"] = geocoded["latitude"]
-                            enhanced_prop["location"]["longitude"] = geocoded["longitude"]
+                            # Validate coordinates are in expected region before using them
+                            original_location = sessions[req.session_id].get("last_search_location", "")
+                            if original_location:
+                                from agents.mapbox_agent import _is_valid_portugal_location, _get_region_hint
+                                region_hint = _get_region_hint(original_location)
+                                if region_hint:
+                                    if not _is_valid_portugal_location(geocoded["latitude"], geocoded["longitude"], region_hint):
+                                        ctx.logger.warning(f"⚠️ Rejecting geocoded coordinates for property {idx + 1}: outside expected region {region_hint}")
+                                        geocoded = None  # Reject wrong coordinates
+                            
+                            if geocoded:
+                                # Add coordinates to the property
+                                enhanced_prop["latitude"] = geocoded["latitude"]
+                                enhanced_prop["longitude"] = geocoded["longitude"]
+                                # Also update location object if it exists
+                                if "location" not in enhanced_prop:
+                                    enhanced_prop["location"] = {}
+                                enhanced_prop["location"]["latitude"] = geocoded["latitude"]
+                                enhanced_prop["location"]["longitude"] = geocoded["longitude"]
+
+                        else:
+                            # Geocoding failed or was rejected - try to use coordinates from scraped data
+                            location = enhanced_prop.get("location", {})
+                            if isinstance(location, dict):
+                                scraped_lat = location.get("latitude")
+                                scraped_lon = location.get("longitude")
+                                if scraped_lat and scraped_lon:
+                                    # Validate scraped coordinates are in Portugal
+                                    from agents.mapbox_agent import _is_valid_portugal_location
+                                    original_location = sessions[req.session_id].get("last_search_location", "")
+                                    if original_location:
+                                        from agents.mapbox_agent import _get_region_hint
+                                        region_hint = _get_region_hint(original_location)
+                                        if region_hint and _is_valid_portugal_location(scraped_lat, scraped_lon, region_hint):
+                                            enhanced_prop["latitude"] = scraped_lat
+                                            enhanced_prop["longitude"] = scraped_lon
+                                            ctx.logger.info(f"✅ Using scraped coordinates for property {idx + 1}: ({scraped_lat}, {scraped_lon})")
+                                        elif _is_valid_portugal_location(scraped_lat, scraped_lon):
+                                            # Fallback: valid Portugal coordinates
+                                            enhanced_prop["latitude"] = scraped_lat
+                                            enhanced_prop["longitude"] = scraped_lon
+                                            ctx.logger.info(f"✅ Using scraped coordinates for property {idx + 1}: ({scraped_lat}, {scraped_lon})")
+                                    else:
+                                        if _is_valid_portugal_location(scraped_lat, scraped_lon):
+                                            enhanced_prop["latitude"] = scraped_lat
+                                            enhanced_prop["longitude"] = scraped_lon
+                                            ctx.logger.info(f"✅ Using scraped coordinates for property {idx + 1}: ({scraped_lat}, {scraped_lon})")
+                                else:
+                                    ctx.logger.warning(f"⚠️ No coordinates available for property {idx + 1} (geocoding failed, no scraped data)")
 
                         # Add image URL if available for this property
                         image_data = next((img for img in result_images if img["index"] == idx), None)
