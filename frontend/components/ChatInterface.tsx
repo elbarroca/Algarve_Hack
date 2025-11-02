@@ -24,8 +24,8 @@ interface ChatInterfaceProps {
 const PRESET_SEARCHES = [
   {
     icon: '🏠',
-    label: 'T1 Faro até €800 com Varanda',
-    message: 'Procuro um T1 em Faro até 800 euros com varanda'
+    label: 'T1 Olhão até €800 com Varanda (para festas :D)',
+    message: 'Procuro um T1 em Olhão até 800 euros com varanda'
   },
   {
     icon: '🏡',
@@ -482,27 +482,11 @@ export default function ChatInterface({ onPropertiesFound, onTopResultCoordinate
                             </div>
                           </div>
                         )}
-                        {listing.bathrooms && (
-                          <div className="bg-slate-800/30 rounded-lg px-2 py-1.5 border border-slate-700/30">
-                            <div className="text-xs text-slate-400">WC</div>
-                            <div className="text-sm text-white font-semibold flex items-center gap-1">
-                              <span>🚿</span> {listing.bathrooms}
-                            </div>
-                          </div>
-                        )}
-                        {(listing.area_m2 || listing.sqft) && (
+                        {(listing.area_m2 || listing.property_details?.area_m2 || listing.sqft) && (
                           <div className="bg-slate-800/30 rounded-lg px-2 py-1.5 border border-slate-700/30">
                             <div className="text-xs text-slate-400">Área</div>
                             <div className="text-sm text-white font-semibold flex items-center gap-1">
-                              <span>📏</span> {listing.area_m2 || listing.sqft}m²
-                            </div>
-                          </div>
-                        )}
-                        {listing.property_details?.area_m2 && (
-                          <div className="bg-slate-800/30 rounded-lg px-2 py-1.5 border border-slate-700/30">
-                            <div className="text-xs text-slate-400">Área</div>
-                            <div className="text-sm text-white font-semibold flex items-center gap-1">
-                              <span>📏</span> {listing.property_details.area_m2}m²
+                              <span>📏</span> {listing.area_m2 || listing.property_details?.area_m2 || listing.sqft}m²
                             </div>
                           </div>
                         )}
@@ -650,8 +634,8 @@ export default function ChatInterface({ onPropertiesFound, onTopResultCoordinate
                     </p>
                   )}
                   <div className="flex gap-2 text-xs text-slate-400">
-                    {listing.bedrooms && <span>🛏️ {listing.bedrooms}</span>}
-                    {listing.bathrooms && <span>🚿 {listing.bathrooms}</span>}
+                    {listing.bedrooms && <span>🛏️ {listing.bedrooms} quartos</span>}
+                    {(listing.area_m2 || listing.property_details?.area_m2) && <span>📏 {listing.area_m2 || listing.property_details?.area_m2}m²</span>}
                   </div>
                   {listing.pois && listing.pois.length > 0 && (
                     <div className="mt-2 text-xs text-blue-400">

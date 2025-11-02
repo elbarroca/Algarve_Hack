@@ -13,15 +13,31 @@ def build_student_housing_prompt(
     property_address: str,
     leverage_score: float,
     findings: list,
-    user_preferences: str = ""
+    user_preferences: str = "",
+    property_price: str = None,
+    property_details: dict = None
 ) -> str:
     """
     Build a concise, direct, human-like prompt for quick property inquiries.
     Goal: 1-2 minute calls, straight to the point, casual but polite.
     Avoids loops and repetition. Works with VAPI voices for natural conversation.
     """
-    
-    return f"""You are {student_name}, a university student. You're calling to ask about a property at {property_address}.
+
+    # Build property context string
+    property_context = f"You're calling about a property at {property_address}"
+    if property_price:
+        property_context += f" (listed at {property_price})"
+    if property_details:
+        details_str = []
+        if property_details.get('bedrooms'):
+            details_str.append(f"{property_details['bedrooms']} bedrooms")
+        if property_details.get('bathrooms'):
+            details_str.append(f"{property_details['bathrooms']} bathrooms")
+        if details_str:
+            property_context += f" with {', '.join(details_str)}"
+    property_context += "."
+
+    return f"""You are {student_name}, a university student. {property_context}
 
 GOAL: Get information quickly. Maximum 1-2 minute call.
 
@@ -105,13 +121,18 @@ Maximum 1-2 minutes. Go straight to the point. Don't repeat anything. Be natural
 def build_first_message(
     student_name: str,
     location: str,
-    property_address: str
+    property_address: str,
+    property_price: str = None
 ) -> str:
     """
     Build a quick, direct first message - casual and straight to the point.
     Only used once at the start of the call. In English.
     """
-    return f"""Hey, good afternoon! I'm {student_name}, a student. Can I talk about the property at {property_address}?""".strip()
+    message = f"Hey, good afternoon! I'm {student_name}, a student. Can I talk about the property at {property_address}"
+    if property_price:
+        message += f", the one listed at {property_price}"
+    message += "?"
+    return message.strip()
 
 
 def build_contextual_questions(location: str) -> list:

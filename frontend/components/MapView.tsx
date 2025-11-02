@@ -34,6 +34,53 @@ const getPOIStyle = (category: string) => {
   return styles[category] || { emoji: '📍', color: '#6B7280', bgColor: 'bg-gray-500' };
 };
 
+// Calculate community scores from POIs
+const calculateScoresFromPOIs = (pois: any[]): any => {
+  if (!pois || pois.length === 0) {
+    return null;
+  }
+
+  // Count POIs by category
+  const categoryCounts: Record<string, number> = {};
+  pois.forEach((poi: any) => {
+    const category = poi.category || 'other';
+    categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+  });
+
+  // Calculate scores based on POI counts (0-10 scale)
+  // School rating: based on schools + parks
+  const schoolCount = (categoryCounts.school || 0) + (categoryCounts.park || 0) * 0.5;
+  const schoolRating = Math.min(10, schoolCount * 2); // 2 points per school, max 10
+
+  // Safety score: based on hospitals + transit stations (indicates developed area)
+  const safetyCount = (categoryCounts.hospital || 0) * 2 + (categoryCounts.transit_station || 0);
+  const safetyScore = Math.min(10, safetyCount * 1.5); // max 10
+
+  // Overall score: average of all amenities
+  const totalPOIs = pois.length;
+  const overallScore = Math.min(10, totalPOIs * 0.8); // 0.8 points per POI, max 10
+
+  // Generate explanations
+  const schoolExplanation = `Found ${categoryCounts.school || 0} schools and ${categoryCounts.park || 0} parks nearby. Good for students and families.`;
+  const safetyExplanation = `${categoryCounts.hospital || 0} hospitals and ${categoryCounts.transit_station || 0} transit stations indicate a well-developed area.`;
+  const overallExplanation = `Total of ${totalPOIs} points of interest found within walking distance. ${totalPOIs >= 10 ? 'Excellent' : totalPOIs >= 5 ? 'Good' : 'Moderate'} neighborhood amenities.`;
+
+  return {
+    overall_score: overallScore,
+    school_rating: schoolRating,
+    safety_score: safetyScore,
+    housing_price_per_square_foot: 'N/A',
+    average_house_size_square_foot: 0,
+    overall_explanation: overallExplanation,
+    school_explanation: schoolExplanation,
+    positive_stories: [
+      { title: 'Nearby Amenities', summary: `${categoryCounts.grocery || 0} grocery stores, ${categoryCounts.restaurant || 0} restaurants, ${categoryCounts.cafe || 0} cafes found nearby` },
+    ],
+    negative_stories: [],
+    location: 'Faro, Portugal'
+  };
+};
+
 export default function MapView({ selectedProperty, allProperties, topResultCoords, topResultDetails, rawSearchResults, onNextListing, currentListingIndex, communityAnalysis }: MapViewProps) {
   const mapRef = useRef<any>(null);
   const [showPopup, setShowPopup] = useState(false);
@@ -185,17 +232,20 @@ export default function MapView({ selectedProperty, allProperties, topResultCoor
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topResultCoords, topResultDetails, mapboxToken]);
 
+  // Calculate scores from POIs if no community analysis available
+  const calculatedScores = communityAnalysis || calculateScoresFromPOIs(currentPOIs);
+
   return (
     <div className="relative h-full w-full">
       {/* Stats Container */}
       <div className="absolute top-0 left-0 right-0 z-10">
         <NeighborhoodStats
-          location={communityAnalysis?.location || "Faro, Portugal"}
+          location={calculatedScores?.location || "Faro, Portugal"}
           propertyCount={allProperties.length}
           onNextListing={onNextListing}
           currentListingIndex={currentListingIndex}
           totalListings={rawSearchResults?.length || 0}
-          communityAnalysis={communityAnalysis}
+          communityAnalysis={calculatedScores}
         />
       </div>
 

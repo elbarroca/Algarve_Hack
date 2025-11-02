@@ -99,16 +99,36 @@ def build_system_prompt(vapi_context: Dict[str, Any]) -> str:
     assert 'property' in vapi_context, "Context must contain property data"
     assert 'user' in vapi_context, "Context must contain user data"
     assert 'intelligence' in vapi_context, "Context must contain intelligence data"
-    
-    property_addr = vapi_context['property']['address']
+
+    property_data = vapi_context['intelligence'].get('property', vapi_context['property'])
+    property_addr = property_data.get('address', vapi_context['property']['address'])
     user_name = vapi_context['user']['name']
     user_prefs = vapi_context['user']['preferences']
     leverage_score = vapi_context['intelligence']['leverage_score']
     findings = vapi_context['intelligence']['findings']
-    
+
     # Extract location from address or use default
     location = property_addr.split(',')[-1].strip() if ',' in property_addr else property_addr
-    
+
+    # Extract property price and format it
+    property_price = None
+    price_value = property_data.get('price')
+    if price_value:
+        if isinstance(price_value, dict):
+            amount = price_value.get('amount')
+            is_rent = price_value.get('is_rent', False)
+            if amount:
+                property_price = f"€{amount:,}{'/month' if is_rent else ''}"
+        elif isinstance(price_value, (int, float)):
+            property_price = f"€{price_value:,}"
+
+    # Extract property details
+    property_details = {
+        'bedrooms': property_data.get('bedrooms'),
+        'bathrooms': property_data.get('bathrooms'),
+        'area_m2': property_data.get('area_m2'),
+    }
+
     # Use optimized prompt from vapi_prompts module
     return build_student_housing_prompt(
         student_name=user_name,
@@ -116,7 +136,9 @@ def build_system_prompt(vapi_context: Dict[str, Any]) -> str:
         property_address=property_addr,
         leverage_score=leverage_score,
         findings=findings,
-        user_preferences=user_prefs
+        user_preferences=user_prefs,
+        property_price=property_price,
+        property_details=property_details
     )
 
 
@@ -267,16 +289,32 @@ def create_vapi_agent(port: int = 8008):
             
             # Build system prompt and first message using optimized prompts
             system_prompt = build_system_prompt(vapi_context)
-            
-            # Extract location for first message
+
+            # Extract location and property price for first message
             location = property_address.split(',')[-1].strip() if ',' in property_address else property_address
-            
+
+            # Extract property price for first message
+            property_data = msg.intelligence.get('property', {})
+            property_price = None
+            price_value = property_data.get('price')
+            if price_value:
+                if isinstance(price_value, dict):
+                    amount = price_value.get('amount')
+                    is_rent = price_value.get('is_rent', False)
+                    if amount:
+                        property_price = f"€{amount:,}{'/month' if is_rent else ''}"
+                elif isinstance(price_value, (int, float)):
+                    property_price = f"€{price_value:,}"
+
             # Use optimized first message
             first_message = build_first_message(
                 student_name=msg.user_name,
                 location=location,
-                property_address=property_address
+                property_address=property_address,
+                property_price=property_price
             )
+
+            ctx.logger.info(f"   - Property price: {property_price or 'Not specified'}")
 
             # Update Vapi assistant with property intelligence
             leverage_score = msg.intelligence.get('leverage_score', 0)
@@ -304,42 +342,31 @@ def create_vapi_agent(port: int = 8008):
             if not success:
                 raise Exception("Failed to update Vapi assistant")
 
-            # 🔧 FIXED: Call the property's listing agent instead of user's number
-            # Extract property contact info from intelligence data
-            # Check both intelligence.property and intelligence.property (nested structure)
-            property_data = msg.intelligence.get("property", {})
-            contact_phone = property_data.get("contact_phone") or property_data.get("seller_phone")
-            
-            ctx.logger.info(f"🔍 Checking for contact info:")
-            ctx.logger.info(f"   Intelligence property data: {bool(property_data)}")
-            ctx.logger.info(f"   Property data keys: {list(property_data.keys()) if property_data else 'None'}")
-            ctx.logger.info(f"   Contact phone found: {contact_phone}")
-            
-            if not contact_phone:
-                # Also check vapi_context property (for backward compatibility)
-                vapi_context_property = vapi_context.get("property", {})
-                contact_phone = vapi_context_property.get("contact_phone") or vapi_context_property.get("seller_phone")
-                ctx.logger.info(f"   Checked vapi_context property: {bool(vapi_context_property)}")
-                ctx.logger.info(f"   Contact phone from vapi_context: {contact_phone}")
-            
-            # Ensure fallback to configured number
-            if contact_phone:
-                ctx.logger.info(f"📞 Calling property listing agent: {contact_phone}")
+            # 🎯 LIVE DEMO MODE: Always call demo target phone
+            # For live demos, we ALWAYS use the configured VAPI_TARGET_PHONE
+            # This ensures the demo calls the correct number regardless of listing data
+
+            if my_phone_number:
+                ctx.logger.info(f"🎭 LIVE DEMO MODE: Using configured target phone")
+                ctx.logger.info(f"📞 Calling demo phone: {my_phone_number}")
                 ctx.logger.info(f"   Property: {property_address}")
                 ctx.logger.info(f"   User: {msg.user_name}")
-                target_phone = contact_phone
+                target_phone = my_phone_number
             else:
-                # Fallback to configured phone number for demo/testing purposes
-                if not my_phone_number:
-                    error_msg = "No contact phone found for property and VAPI_MY_PHONE_NUMBER/VAPI_TARGET_PHONE not configured"
+                # Fallback to listing agent phone if demo phone not configured
+                property_data = msg.intelligence.get("property", {})
+                contact_phone = property_data.get("contact_phone") or property_data.get("seller_phone")
+
+                ctx.logger.info(f"🔍 No demo phone configured, checking listing contact:")
+                ctx.logger.info(f"   Contact phone found: {contact_phone}")
+
+                if contact_phone:
+                    ctx.logger.info(f"📞 Calling property listing agent: {contact_phone}")
+                    target_phone = contact_phone
+                else:
+                    error_msg = "No demo phone configured and no listing contact phone found"
                     ctx.logger.error(f"❌ {error_msg}")
                     raise Exception(error_msg)
-                
-                ctx.logger.warning(f"⚠️ No contact phone found for property")
-                ctx.logger.info(f"📞 Using fallback: calling configured number: {my_phone_number}")
-                ctx.logger.info(f"   This is for demo/testing purposes")
-                ctx.logger.info(f"   To call actual listing agents, ensure property data includes contact_phone")
-                target_phone = my_phone_number
             
             ctx.logger.info(f"📞 Creating Vapi call to: {target_phone}")
             ctx.logger.info(f"   Final phone number: {target_phone}")

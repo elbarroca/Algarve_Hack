@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Property } from '@/lib/mockData';
 
@@ -11,16 +11,29 @@ interface NegotiationModalProps {
 }
 
 export function NegotiationModal({ property, onClose, listing_data }: NegotiationModalProps) {
-  const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-    additionalInfo: '',
+  // Load saved user info from localStorage on mount, or use demo defaults
+  const [formData, setFormData] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('userNegotiationInfo');
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch (e) {
+          console.error('Failed to parse saved user info:', e);
+        }
+      }
+    }
+    // Default demo values for live demo
+    return {
+      name: 'Ricardo Barroca',
+      email: 'ricardobarroca35@gmail.com',
+      additionalInfo: 'Looking for student housing near University of Algarve. Budget flexible, prefer move-in within 2 months.',
+    };
   });
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isProbing, setIsProbing] = useState(false);
-  const [isCallInProgress, setIsCallInProgress] = useState(false);
+  const [callStage, setCallStage] = useState<'idle' | 'probing' | 'preparing' | 'calling' | 'in_progress' | 'completed'>('idle');
   const [callSummary, setCallSummary] = useState<any>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -29,6 +42,15 @@ export function NegotiationModal({ property, onClose, listing_data }: Negotiatio
     setError(null);
 
     try {
+      // Save user info to localStorage for future use
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('userNegotiationInfo', JSON.stringify({
+          name: formData.name,
+          email: formData.email,
+          additionalInfo: formData.additionalInfo,
+        }));
+      }
+
       console.log('Sending negotiation request:', {
         address: property.address,
         name: formData.name,
@@ -37,9 +59,9 @@ export function NegotiationModal({ property, onClose, listing_data }: Negotiatio
         listing_data: listing_data || property,
       });
 
-      // Immediately show probing screen
+      // Show probing stage
       setIsSubmitting(false);
-      setIsProbing(true);
+      setCallStage('probing');
 
       const response = await fetch('http://localhost:8080/api/negotiate', {
         method: 'POST',
@@ -62,34 +84,32 @@ export function NegotiationModal({ property, onClose, listing_data }: Negotiatio
         const errorText = await response.text();
         console.error('Error response:', errorText);
         // Reset to form and show error
-        setIsProbing(false);
-        setIsCallInProgress(false);
+        setCallStage('idle');
         setError(`Failed to start negotiation: ${response.status}`);
         return;
       }
-
-      // When we get response, probing is done and call has started
-      // Transition from probing to call in progress
-      setIsProbing(false);
-      setIsCallInProgress(true);
 
       const result = await response.json();
       console.log('Negotiation completed:', result);
 
       // Check if response has success flag
       if (result.success) {
-        // Store the result and transition to summary
+        // If call was initiated, show appropriate stage
+        if (result.call_status === 'success' || result.call_id) {
+          setCallStage('completed');
+        } else {
+          setCallStage('calling');
+        }
+        // Store the result
         setCallSummary(result);
-        setIsCallInProgress(false);
       } else {
         // Show error and go back to form
-        setIsCallInProgress(false);
+        setCallStage('idle');
         setError(result.message || 'Unknown error');
       }
     } catch (err) {
       console.error('Negotiation error:', err);
-      setIsProbing(false);
-      setIsCallInProgress(false);
+      setCallStage('idle');
       setError('Failed to start negotiation. Please try again.');
     }
   };
@@ -133,8 +153,8 @@ export function NegotiationModal({ property, onClose, listing_data }: Negotiatio
     return actions;
   };
 
-  // Probing screen - gathering intelligence
-  if (isProbing) {
+  // Dynamic loading screen based on call stage
+  if (callStage === 'probing') {
     return createPortal(
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-lg" onClick={(e) => e.stopPropagation()}>
         <div className="relative w-full max-w-md bg-gradient-to-br from-slate-900/95 to-slate-800/95 border border-blue-500/30 rounded-2xl shadow-2xl backdrop-blur-xl p-8" onClick={(e) => e.stopPropagation()}>
@@ -153,8 +173,8 @@ export function NegotiationModal({ property, onClose, listing_data }: Negotiatio
 
             {/* Loading text */}
             <div className="text-center space-y-2">
-              <h3 className="text-2xl font-bold text-white">Probing Property</h3>
-              <p className="text-white/60">Gathering intelligence, analyzing market data, and preparing for negotiation...</p>
+              <h3 className="text-2xl font-bold text-white">Gathering Intelligence</h3>
+              <p className="text-white/60">Analyzing market data, searching property details, and preparing negotiation strategy...</p>
             </div>
 
             {/* Loading dots */}
@@ -170,8 +190,8 @@ export function NegotiationModal({ property, onClose, listing_data }: Negotiatio
     );
   }
 
-  // Loading screen during call
-  if (isCallInProgress) {
+  // Call initiation and progress screens
+  if (callStage === 'calling' || callStage === 'in_progress') {
     return createPortal(
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-lg" onClick={(e) => e.stopPropagation()}>
         <div className="relative w-full max-w-md bg-gradient-to-br from-slate-900/95 to-slate-800/95 border border-purple-500/30 rounded-2xl shadow-2xl backdrop-blur-xl p-8" onClick={(e) => e.stopPropagation()}>
@@ -190,8 +210,14 @@ export function NegotiationModal({ property, onClose, listing_data }: Negotiatio
 
             {/* Loading text */}
             <div className="text-center space-y-2">
-              <h3 className="text-2xl font-bold text-white">Call in Progress</h3>
-              <p className="text-white/60">Our AI agent is on a call with the listing agent, negotiating on your behalf...</p>
+              <h3 className="text-2xl font-bold text-white">
+                {callStage === 'calling' ? 'Calling Listing Agent...' : 'Call in Progress'}
+              </h3>
+              <p className="text-white/60">
+                {callStage === 'calling'
+                  ? 'Dialing the listing agent to discuss the property...'
+                  : 'Our AI agent is negotiating with the listing agent on your behalf...'}
+              </p>
             </div>
 
             {/* Loading dots */}
@@ -208,7 +234,7 @@ export function NegotiationModal({ property, onClose, listing_data }: Negotiatio
   }
 
   // Show call summary after call completes
-  if (callSummary) {
+  if (callStage === 'completed' && callSummary) {
     return createPortal(
       <div
         className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"

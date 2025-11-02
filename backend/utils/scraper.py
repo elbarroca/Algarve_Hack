@@ -943,8 +943,24 @@ def format_property_json(property_data: Dict) -> Dict:
     # Use constructed address if components available, otherwise fallback to raw location
     full_address = ', '.join(address_parts) if address_parts else property_data.get('location', '')
 
+    # Build a human-readable title from property type and location
+    title_parts = []
+    if property_data.get('property_type'):
+        title_parts.append(property_data.get('property_type'))
+    if property_data.get('neighborhood'):
+        title_parts.append(property_data.get('neighborhood'))
+    elif property_data.get('city'):
+        title_parts.append(property_data.get('city'))
+
+    title = ', '.join(title_parts) if title_parts else full_address
+
     return {
         'property_type': property_data.get('property_type', ''),
+        # Top-level fields for frontend compatibility
+        'address': full_address,  # Use constructed address, not raw location
+        'title': title,  # Human-readable title
+        'bedrooms': property_data.get('bedrooms'),
+        'bathrooms': property_data.get('bathrooms'),
         'location': {
             'street': property_data.get('street', ''),
             'neighborhood': property_data.get('neighborhood', ''),

@@ -26,7 +26,7 @@ export const RoommateProfileForm: React.FC<RoommateProfileFormProps> = ({
   const [step, setStep] = useState(1);
   const totalSteps = 3;
 
-  const algarveCities = ['Faro', 'Loulé', 'Portimão', 'Lagos', 'Albufeira', 'Tavira', 'Silves'];
+  const algarveCities = ['Faro', 'Loulé', 'Portimão', 'Lagos', 'Albufeira', 'Tavira', 'Silves', 'Vila do Bispo', 'Vila Real de Santo António', 'Alcoutim', 'Aljezur', 'Castro Marim', 'Lagoa', 'Monchique', 'Olhão', 'São Brás de Alportel'];
 
   const handleCityToggle = (city: string) => {
     const currentCities = profile.preferred_cities || [];

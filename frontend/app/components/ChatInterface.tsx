@@ -130,10 +130,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   // Helper functions to parse property data from search results
   const extractCityFromTitle = (title: string): string => {
-    const cities = ['Faro', 'Loulé', 'Portimão', 'Lagos', 'Albufeira', 'Tavira', 'Silves', 'Olhão'];
+    // Comprehensive Algarve municipalities + major localities/resorts
+    const cities = [
+      // Municipalities (16)
+      'Albufeira','Alcoutim','Aljezur','Castro Marim','Faro','Lagoa','Lagos','Loulé','Monchique','Olhão','Portimão','São Brás de Alportel','Silves','Tavira','Vila do Bispo','Vila Real de Santo António',
+      // Major localities & resorts often used in listings
+      'Vilamoura','Quarteira','Almancil','Quinta do Lago','Vale do Lobo','Armação de Pêra','Porches','Carvoeiro','Ferragudo','Estômbar','Parchal','Alvor','Praia da Rocha','Mexilhoeira Grande','Meia Praia',
+      'Luz','Praia da Luz','Burgau','Salema','Sagres','Budens','Monte Gordo','Altura','Manta Rota','Cacela','Cabanas de Tavira','Cabanas','Santa Luzia','Conceição de Tavira','Conceição',
+      'Santa Catarina da Fonte do Bispo','Moncarapacho','Fuseta','Odiáxere','Bensafrim','Barão de São João','Marmelete','Alferce','São Marcos da Serra','São Bartolomeu de Messines','Pêra','Algoz','Tunes',
+      'Ferreiras','Guia','Paderne','Boliqueime','Benafim','Querença','Tôr','Salir','Ameixial'
+    ];
+
+    // Normalize to compare without diacritics and case
+    const normalize = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const normTitle = normalize(title);
+
     for (const city of cities) {
-      if (title.toLowerCase().includes(city.toLowerCase())) {
-        return city;
+      if (normTitle.includes(normalize(city))) {
+        return city; // return the canonical label as listed above
       }
     }
     return 'Algarve';

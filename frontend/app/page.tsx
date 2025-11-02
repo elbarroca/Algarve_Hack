@@ -25,7 +25,7 @@ export default function Home() {
       id: idx + 1000,
       address: prop.address || prop.title || 'Unknown Address',
       city: prop.location || 'Faro',
-      state: 'Faro',
+      state: 'Algarve',
       price: typeof prop.price === 'object' ? (prop.price?.amount || 0) : (prop.price || 0),
       bedrooms: prop.bedrooms || 0,
       bathrooms: prop.bathrooms || 0,
@@ -45,8 +45,8 @@ export default function Home() {
     console.log('[Home] Storing raw search results:', results.length);
     console.log('[Home] Raw results with POIs:', results);
 
-    // Limit to 5 listings max for faster cycling
-    const limitedResults = results.slice(0, 5);
+    // Limit to 10 listings max for display
+    const limitedResults = results.slice(0, 10);
     setRawSearchResults(limitedResults);
     setCurrentListingIndex(0); // Reset to first listing
 
@@ -92,6 +92,9 @@ export default function Home() {
         image_url: nextListing.image_url
       });
     }
+
+    // Clear community analysis when changing listings (will be re-fetched if available for this listing)
+    setCommunityAnalysis(null);
   };
 
   const handleTopResultCoordinates = (coords: { latitude: number; longitude: number; address: string; image_url?: string } | null) => {

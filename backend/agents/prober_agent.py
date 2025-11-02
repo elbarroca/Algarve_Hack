@@ -41,73 +41,45 @@ Return ONLY valid JSON, no markdown formatting or additional text."""
             text = item.get("content", "")[:2000]  # Limit to first 2000 chars per source
             content_summary += f"\n\n--- Source {idx}: {url} ---\n{text}\n"
 
-        prompt = f"""You are a ruthless real estate negotiation analyst. Your job is to find NEGATIVE information, red flags, and weaknesses about this property that a buyer can use as leverage to negotiate a LOWER price.
+        prompt = f"""You are a real estate negotiation analyst. Analyze the property data and extract any leverage points.
 
 Property Address: {address}
 
 Scraped Information:
 {content_summary}
 
-FOCUS ON NEGATIVE INFORMATION ONLY. Extract leverage points in these categories:
+Extract findings about the property that could help in negotiation. Categories: time_on_market, price_history, property_issues, owner_situation, market_conditions.
 
-1. **time_on_market**:
-   - How many days on market? (longer = desperate seller)
-   - Price reductions? (indicates overpriced or lack of interest)
-   - Multiple listing attempts?
+CRITICAL JSON RULES:
+1. Return ONLY valid JSON - no extra text, no markdown
+2. Keep all text fields SHORT (max 100 characters per field)
+3. Escape quotes inside strings properly
+4. No newlines inside strings
+5. Use simple punctuation only (no special characters)
 
-2. **price_history**:
-   - Recent price drops
-   - Bought high, selling low (financial pressure)
-   - Overpriced compared to comps
-
-3. **property_issues**:
-   - Foundation, roof, plumbing problems
-   - Code violations, unpermitted work
-   - Deferred maintenance
-   - Needed repairs mentioned in listing
-
-4. **owner_situation**:
-   - Foreclosure risk, tax liens
-   - Estate sale (heirs want quick cash)
-   - Divorce (forced sale)
-   - Job relocation (time pressure)
-   - Financial distress signals
-
-5. **market_conditions**:
-   - Buyer's market indicators
-   - High inventory in area
-   - Declining neighborhood values
-   - Economic factors favoring buyers
-
-**IMPORTANT**: Only include findings that give the BUYER an advantage. Skip positive information. Be specific with numbers (days on market, price reductions, etc).
-
-For each finding, provide:
-- category (one of the above)
-- summary (1-2 sentences highlighting the NEGATIVE aspect)
-- leverage_score (0-10, how useful for negotiation - higher = more leverage)
-- details (specific numbers, dates, problems)
-- source_url (if applicable)
-
-Also provide:
-- overall_assessment: A 2-3 sentence summary of the buyer's negotiation position focusing on WEAKNESSES found
-- leverage_score: Overall score 0-10 (10 = strong buyer leverage due to many issues found)
-
-Return ONLY valid JSON in this exact format:
+Return in this EXACT format:
 {{
   "findings": [
     {{
-      "category": "time_on_market",
-      "summary": "...",
-      "leverage_score": 7.5,
-      "details": "...",
-      "source_url": "..."
+      "category": "market_conditions",
+      "summary": "Short one-sentence summary",
+      "leverage_score": 5.0,
+      "details": "Brief specific details",
+      "source_url": "url_here_or_null"
     }}
   ],
-  "overall_assessment": "...",
-  "leverage_score": 6.5
+  "overall_assessment": "Short 1-2 sentence assessment",
+  "leverage_score": 5.0
 }}
 
-If you cannot find any information, return an empty findings array and low leverage_score.
+If no information found, return:
+{{
+  "findings": [],
+  "overall_assessment": "No relevant information found",
+  "leverage_score": 0.0
+}}
+
+IMPORTANT: Keep ALL text short and simple. No complex punctuation.
 """
 
         result = await self.query_with_json(prompt, temperature=0.1)
